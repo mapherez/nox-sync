@@ -78,7 +78,8 @@ Response:
 {
   "status": "ready",
   "version": "dev",
-  "dataDirInitialized": true
+  "dataDirInitialized": true,
+  "databasePath": "/data/nox-sync.db"
 }
 ```
 
@@ -138,6 +139,8 @@ SSE is for status updates only. It is not used for realtime file sync.
 
 Begins a manual sync session if the backend lock is available.
 
+Requires authentication.
+
 Request:
 
 ```json
@@ -171,6 +174,8 @@ Lock rejection:
 
 Refreshes the active lock for a sync session.
 
+Requires authentication.
+
 Request:
 
 ```json
@@ -183,6 +188,8 @@ Request:
 ### `POST /v1/sync/manifest`
 
 Submits the local manifest and returns a sync plan.
+
+Requires authentication.
 
 Request:
 
@@ -234,11 +241,20 @@ Allowed action types:
 
 Uploads one local file to backend staging.
 
-Required metadata may be passed through query parameters or headers in the final implementation:
+Requires authentication.
 
-- path
-- expected SHA-256 hash
-- size
+Required query parameters:
+
+- `clientId`
+- `path`
+- `hash`
+- `size`
+
+Example:
+
+```txt
+PUT /v1/sync/upload/sync_xxx?clientId=client_xxx&path=Notes/example.md&hash=<sha256>&size=128
+```
 
 The backend must calculate SHA-256 itself and reject mismatches.
 
@@ -246,11 +262,33 @@ The backend must calculate SHA-256 itself and reject mismatches.
 
 Downloads one remote file by path and expected revision/hash.
 
+Requires authentication.
+
+Request:
+
+```txt
+GET /v1/files/download?path=Notes/example.md
+```
+
+Response body:
+
+```txt
+application/octet-stream
+```
+
+Response headers:
+
+- `X-NoX-Sync-Path`
+- `X-NoX-Sync-Hash`
+- `X-NoX-Sync-Revision`
+
 The plugin must verify the downloaded SHA-256 hash before replacing or writing local content.
 
 ### `POST /v1/sync/commit`
 
 Commits a sync session after all planned actions are complete.
+
+Requires authentication.
 
 Request:
 
@@ -274,6 +312,8 @@ No file is considered synced until this succeeds.
 ### `POST /v1/sync/abort`
 
 Aborts a sync session and releases the lock when safe.
+
+Requires authentication.
 
 Request:
 

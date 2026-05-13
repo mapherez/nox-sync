@@ -14,13 +14,18 @@ import (
 
 // Server owns HTTP routing for the backend.
 type Server struct {
-	cfg   Config
-	store *storage.Store
+	cfg    Config
+	store  *storage.Store
+	events *statusBroker
 }
 
 // NewServer creates a backend server instance.
 func NewServer(cfg Config, store *storage.Store) *Server {
-	return &Server{cfg: cfg, store: store}
+	return &Server{
+		cfg:    cfg,
+		store:  store,
+		events: newStatusBroker(),
+	}
 }
 
 // Routes returns the backend HTTP handler.
@@ -32,6 +37,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("/v1/status", s.handleStatus)
 	mux.HandleFunc("/v1/sync/events", s.handleSyncEvents)
+	mux.HandleFunc("/v1/sync/begin", s.handleBeginSync)
+	mux.HandleFunc("/v1/sync/heartbeat", s.handleHeartbeatSync)
+	mux.HandleFunc("/v1/sync/manifest", s.handleManifestSync)
+	mux.HandleFunc("/v1/sync/upload/", s.handleUploadSync)
+	mux.HandleFunc("/v1/sync/commit", s.handleCommitSync)
+	mux.HandleFunc("/v1/sync/abort", s.handleAbortSync)
+	mux.HandleFunc("/v1/files/download", s.handleDownloadFile)
 	return mux
 }
 
@@ -156,7 +168,20 @@ func (s *Server) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	<-r.Context().Done()
+	events, unsubscribe := s.events.subscribe()
+	defer unsubscribe()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event := <-events:
+			_, _ = fmt.Fprintf(w, "event: status\ndata: %s\n\n", event)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}
 }
 
 func (s *Server) statusPayload(ctx context.Context) (map[string]any, error) {
