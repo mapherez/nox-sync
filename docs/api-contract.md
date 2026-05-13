@@ -176,6 +176,8 @@ Refreshes the active lock for a sync session.
 
 Requires authentication.
 
+Clients should call this while a manual sync is running, using the `heartbeatAfterSeconds` value returned by `/v1/sync/begin`.
+
 Request:
 
 ```json

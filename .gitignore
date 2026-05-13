@@ -5,6 +5,7 @@ backend/coverage.out
 # Plugin
 plugin/node_modules/
 plugin/dist/
+plugin/.test-dist/
 plugin/*.tsbuildinfo
 
 # Local runtime data

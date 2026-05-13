@@ -50,11 +50,17 @@ This repository is at Milestone 6:
 - binary/non-Markdown conflict handling with keep local, keep remote, and keep both choices
 - syncable conflict copy naming using `filename.sync-conflict.<client-name>.<date>.ext`
 - explicit resolved delete/upload planner paths so user conflict choices do not loop back into conflict
+- plugin sync heartbeat while a manual sync is in progress
+- `SYNCING_LOCAL` progress tooltip/ring updates through scan, planning, file actions, and commit
+- stale backend sync locks clean up abandoned staging directories when reaped
+- backend failure-path tests for unsafe commits, conflict commits, ownership checks, hash mismatches, and restart stale-lock recovery
+- plugin error mapping for stale sessions, missing sessions, hash mismatches, remote locks, and safe retry from `ERROR`
+- lightweight plugin test harness for path normalization, exclusions, progress math, and backend error classification
 - Docker scaffolding
 - fixture vaults
 - naming conventions
 
-The first non-conflicting plugin sync path and initial user-facing conflict resolution are implemented. Later milestones add failure-recovery hardening and release readiness.
+The first non-conflicting plugin sync path, initial user-facing conflict resolution, and the first reliability hardening pass are implemented. Later milestones continue failure-path coverage and release readiness.
 
 ## Development
 
@@ -72,6 +78,7 @@ Plugin:
 cd plugin
 npm install
 npm run build
+npm run test
 ```
 
 Local backend with Docker Compose:

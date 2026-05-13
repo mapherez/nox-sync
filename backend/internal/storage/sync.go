@@ -69,6 +69,7 @@ func (s *Store) BeginSync(ctx context.Context, req BeginSyncRequest) (BeginSyncR
 		return BeginSyncResult{}, err
 	}
 
+	staleSessionID := ""
 	if lockStatus == SyncStateSyncing {
 		expired, err := isExpired(expiresAt, now)
 		if err != nil {
@@ -80,6 +81,7 @@ func (s *Store) BeginSync(ctx context.Context, req BeginSyncRequest) (BeginSyncR
 		if err := markSessionFailedTx(ctx, tx, lockSessionID, "SYNC_SESSION_STALE", "Sync lock expired."); err != nil {
 			return BeginSyncResult{}, err
 		}
+		staleSessionID = lockSessionID
 	}
 
 	var revision int64
@@ -124,6 +126,10 @@ func (s *Store) BeginSync(ctx context.Context, req BeginSyncRequest) (BeginSyncR
 
 	if err := tx.Commit(); err != nil {
 		return BeginSyncResult{}, fmt.Errorf("commit sync begin transaction: %w", err)
+	}
+
+	if staleSessionID != "" {
+		_ = os.RemoveAll(s.stagingSessionDir(staleSessionID))
 	}
 
 	return BeginSyncResult{
@@ -907,6 +913,7 @@ func (s *Store) markSessionStale(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("commit stale session transaction: %w", err)
 	}
 
+	_ = os.RemoveAll(s.stagingSessionDir(sessionID))
 	return nil
 }
 
