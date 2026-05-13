@@ -174,6 +174,140 @@ func TestPlanSyncReportsConflictForDivergedFile(t *testing.T) {
 	}
 }
 
+func TestPlanSyncDownloadsRemoteOnlyChangeForUnchangedLocalFile(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	baseContent := []byte("base")
+	baseHash := sha256Hex(baseContent)
+	remoteContent := []byte("remote")
+	remoteHash := sha256Hex(remoteContent)
+
+	first := beginSyncForTest(t, store, "client_a")
+	if _, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID: first.SessionID,
+		ClientID:  "client_a",
+		VaultID:   "vault_test",
+		Files: []ManifestFile{{
+			Path: "note.md",
+			Hash: baseHash,
+			Size: int64(len(baseContent)),
+		}},
+	}); err != nil {
+		t.Fatalf("plan first sync: %v", err)
+	}
+	if err := store.StageUpload(ctx, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
+		t.Fatalf("stage first upload: %v", err)
+	}
+	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
+		t.Fatalf("commit first sync: %v", err)
+	}
+
+	second := beginSyncForTest(t, store, "client_b")
+	if _, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID:               second.SessionID,
+		ClientID:                "client_b",
+		VaultID:                 "vault_test",
+		LastKnownServerRevision: 1,
+		Files: []ManifestFile{{
+			Path:              "note.md",
+			Hash:              remoteHash,
+			Size:              int64(len(remoteContent)),
+			LastKnownRevision: 1,
+		}},
+	}); err != nil {
+		t.Fatalf("plan second sync: %v", err)
+	}
+	if err := store.StageUpload(ctx, second.SessionID, "client_b", "note.md", remoteHash, int64(len(remoteContent)), bytes.NewReader(remoteContent)); err != nil {
+		t.Fatalf("stage second upload: %v", err)
+	}
+	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
+		t.Fatalf("commit second sync: %v", err)
+	}
+
+	third := beginSyncForTest(t, store, "client_a")
+	plan, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID:               third.SessionID,
+		ClientID:                "client_a",
+		VaultID:                 "vault_test",
+		LastKnownServerRevision: 1,
+		Files: []ManifestFile{{
+			Path:              "note.md",
+			Hash:              baseHash,
+			Size:              int64(len(baseContent)),
+			LastKnownRevision: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("plan third sync: %v", err)
+	}
+	if len(plan.Actions) != 1 || plan.Actions[0].Type != PlanActionDownload {
+		t.Fatalf("expected download action, got %#v", plan.Actions)
+	}
+}
+
+func TestPlanSyncRemoteDeleteConflictsWhenLocalChanged(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	baseContent := []byte("base")
+	baseHash := sha256Hex(baseContent)
+	localContent := []byte("local")
+	localHash := sha256Hex(localContent)
+
+	first := beginSyncForTest(t, store, "client_a")
+	if _, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID: first.SessionID,
+		ClientID:  "client_a",
+		VaultID:   "vault_test",
+		Files: []ManifestFile{{
+			Path: "note.md",
+			Hash: baseHash,
+			Size: int64(len(baseContent)),
+		}},
+	}); err != nil {
+		t.Fatalf("plan first sync: %v", err)
+	}
+	if err := store.StageUpload(ctx, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
+		t.Fatalf("stage first upload: %v", err)
+	}
+	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
+		t.Fatalf("commit first sync: %v", err)
+	}
+
+	second := beginSyncForTest(t, store, "client_b")
+	if _, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID:               second.SessionID,
+		ClientID:                "client_b",
+		VaultID:                 "vault_test",
+		LastKnownServerRevision: 1,
+		DeletedPaths:            []string{"note.md"},
+	}); err != nil {
+		t.Fatalf("plan second sync: %v", err)
+	}
+	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
+		t.Fatalf("commit second sync: %v", err)
+	}
+
+	third := beginSyncForTest(t, store, "client_a")
+	plan, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID:               third.SessionID,
+		ClientID:                "client_a",
+		VaultID:                 "vault_test",
+		LastKnownServerRevision: 1,
+		Files: []ManifestFile{{
+			Path:              "note.md",
+			Hash:              localHash,
+			Size:              int64(len(localContent)),
+			LastKnownRevision: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("plan third sync: %v", err)
+	}
+	if len(plan.Actions) != 1 || plan.Actions[0].Type != PlanActionConflict {
+		t.Fatalf("expected conflict action, got %#v", plan.Actions)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 

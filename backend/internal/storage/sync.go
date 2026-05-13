@@ -24,6 +24,7 @@ const (
 type remoteFile struct {
 	Path        string
 	CurrentHash string
+	PreviousHash string
 	Size        int64
 	Revision    int64
 	Deleted     bool
@@ -186,12 +187,23 @@ func (s *Store) PlanSync(ctx context.Context, req ManifestRequest) (SyncPlan, er
 			actions = append(actions, uploadAction(local))
 		case remote.Deleted:
 			if remote.Revision > req.LastKnownServerRevision {
-				actions = append(actions, PlanAction{
-					Type:       PlanActionDeleteLocal,
-					Path:       path,
-					RemoteHash: remote.CurrentHash,
-					Revision:   remote.Revision,
-				})
+				if local.Hash == remote.PreviousHash {
+					actions = append(actions, PlanAction{
+						Type:       PlanActionDeleteLocal,
+						Path:       path,
+						RemoteHash: remote.PreviousHash,
+						Revision:   remote.Revision,
+					})
+				} else {
+					actions = append(actions, PlanAction{
+						Type:         PlanActionConflict,
+						Path:         path,
+						ExpectedHash: local.Hash,
+						RemoteHash:   remote.PreviousHash,
+						Size:         local.Size,
+						Revision:     remote.Revision,
+					})
+				}
 			} else {
 				actions = append(actions, uploadAction(local))
 			}
@@ -200,14 +212,24 @@ func (s *Store) PlanSync(ctx context.Context, req ManifestRequest) (SyncPlan, er
 		case local.LastKnownRevision == remote.Revision:
 			actions = append(actions, uploadAction(local))
 		case local.LastKnownRevision < remote.Revision:
-			actions = append(actions, PlanAction{
-				Type:         PlanActionConflict,
-				Path:         path,
-				ExpectedHash: local.Hash,
-				RemoteHash:   remote.CurrentHash,
-				Size:         local.Size,
-				Revision:     remote.Revision,
-			})
+			if local.Hash == remote.PreviousHash {
+				actions = append(actions, PlanAction{
+					Type:       PlanActionDownload,
+					Path:       path,
+					RemoteHash: remote.CurrentHash,
+					Size:       remote.Size,
+					Revision:   remote.Revision,
+				})
+			} else {
+				actions = append(actions, PlanAction{
+					Type:         PlanActionConflict,
+					Path:         path,
+					ExpectedHash: local.Hash,
+					RemoteHash:   remote.CurrentHash,
+					Size:         local.Size,
+					Revision:     remote.Revision,
+				})
+			}
 		default:
 			actions = append(actions, PlanAction{
 				Type:         PlanActionConflict,
@@ -506,7 +528,7 @@ func uploadAction(file ManifestFile) PlanAction {
 
 func (s *Store) loadRemoteFiles(ctx context.Context) (map[string]remoteFile, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT path, COALESCE(current_hash, ''), size, revision, deleted
+		SELECT path, COALESCE(current_hash, ''), COALESCE(previous_hash, ''), size, revision, deleted
 		FROM files
 	`)
 	if err != nil {
@@ -518,7 +540,7 @@ func (s *Store) loadRemoteFiles(ctx context.Context) (map[string]remoteFile, err
 	for rows.Next() {
 		var file remoteFile
 		var deleted int
-		if err := rows.Scan(&file.Path, &file.CurrentHash, &file.Size, &file.Revision, &deleted); err != nil {
+		if err := rows.Scan(&file.Path, &file.CurrentHash, &file.PreviousHash, &file.Size, &file.Revision, &deleted); err != nil {
 			return nil, fmt.Errorf("scan remote file: %w", err)
 		}
 		file.Deleted = deleted == 1

@@ -30,7 +30,11 @@ declare module "obsidian" {
   export interface Vault {
     getName(): string;
     getFiles(): TFile[];
+    getAbstractFileByPath(path: string): TAbstractFile | null;
     readBinary(file: TFile): Promise<ArrayBuffer>;
+    createBinary(path: string, data: ArrayBuffer): Promise<TFile>;
+    createFolder(path: string): Promise<void>;
+    rename(file: TAbstractFile, newPath: string): Promise<void>;
     on(name: "create", callback: (file: TAbstractFile) => unknown): EventRef;
     on(name: "modify", callback: (file: TFile) => unknown): EventRef;
     on(name: "delete", callback: (file: TAbstractFile) => unknown): EventRef;
@@ -89,6 +93,8 @@ declare module "obsidian" {
     status: number;
     json: unknown;
     text: string;
+    arrayBuffer: ArrayBuffer;
+    headers: Record<string, string>;
   }
 
   export function requestUrl(params: RequestUrlParam): Promise<RequestUrlResponse>;

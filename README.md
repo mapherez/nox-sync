@@ -11,7 +11,7 @@ The product rules and implementation milestones live in `SPECS/`.
 
 ## Current State
 
-This repository is at Milestone 4:
+This repository is at Milestone 5:
 
 - backend skeleton
 - plugin skeleton
@@ -38,11 +38,17 @@ This repository is at Milestone 4:
 - full local manifest scan before manual sync/status correction
 - remote/local dirty state derivation from backend revision plus local pending state
 - Sync hidden files setting, with NoX Sync plugin data still excluded
+- plugin manual sync begin, manifest submission, plan execution, commit, and abort-on-failure flow
+- plugin upload execution for planned local changes
+- plugin remote download execution with SHA-256 verification before writing
+- safe local replacement/delete handling through an excluded `.nox-sync-trash/` folder
+- plugin sync state updates only after successful backend commit
+- backend planner handling for remote-only edits and remote deletes against unchanged local files
 - Docker scaffolding
 - fixture vaults
 - naming conventions
 
-The plugin file sync engine is not implemented yet. Later milestones add end-to-end sync execution from Obsidian and user-facing conflict resolution.
+The first non-conflicting plugin sync path is implemented. Later milestones add user-facing conflict resolution and failure-recovery hardening.
 
 ## Development
 

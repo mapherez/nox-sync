@@ -1,4 +1,4 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, requestUrl, setIcon } from "obsidian";
+import { App, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, requestUrl, setIcon } from "obsidian";
 
 enum SyncButtonState {
   Unknown = "UNKNOWN",
@@ -53,6 +53,56 @@ interface LocalManifestFile {
   deleted: false;
 }
 
+interface BeginSyncResponse {
+  sessionId: string;
+  serverRevision: number;
+  heartbeatAfterSeconds: number;
+}
+
+interface ManifestRequest {
+  sessionId: string;
+  clientId: string;
+  vaultId: string;
+  lastKnownServerRevision: number;
+  files: LocalManifestFile[];
+  deletedPaths: string[];
+}
+
+interface SyncPlanResponse {
+  sessionId: string;
+  serverRevision: number;
+  actions: PlanAction[];
+}
+
+interface PlanAction {
+  type: PlanActionType;
+  path: string;
+  expectedHash?: string;
+  remoteHash?: string;
+  baseHash?: string;
+  size?: number;
+  revision?: number;
+}
+
+type PlanActionType = "upload" | "download" | "delete_remote" | "delete_local" | "conflict" | "none";
+
+interface CommitResponse {
+  serverRevision: number;
+}
+
+interface BackendErrorResponse {
+  code?: string;
+  message?: string;
+}
+
+interface DownloadedFile {
+  content: ArrayBuffer;
+  hash: string;
+  revision: number;
+}
+
+const NOX_SYNC_TRASH_ROOT = ".nox-sync-trash";
+
 const DEFAULT_SETTINGS: NoxSyncSettings = {
   serverUrl: "",
   apiKey: "",
@@ -70,6 +120,24 @@ const DEFAULT_SETTINGS: NoxSyncSettings = {
 const STATE_CLASSES = Object.values(SyncButtonState).map(
   (state) => `nox-sync-state-${state.toLowerCase()}`,
 );
+
+class BackendRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "BackendRequestError";
+  }
+}
+
+class SyncConflictError extends Error {
+  constructor(readonly conflictPaths: string[]) {
+    super("NoX Sync conflicts were detected.");
+    this.name = "SyncConflictError";
+  }
+}
 
 export default class NoxSyncPlugin extends Plugin {
   settings: NoxSyncSettings = { ...DEFAULT_SETTINGS };
@@ -312,13 +380,15 @@ export default class NoxSyncPlugin extends Plugin {
       case SyncButtonState.LocalDirty:
       case SyncButtonState.RemoteDirty:
       case SyncButtonState.BothDirty:
-        await this.refreshLocalAndBackendStatus();
+        if (!(await this.refreshLocalAndBackendStatus())) {
+          return;
+        }
         if (
           this.buttonState === SyncButtonState.LocalDirty ||
           this.buttonState === SyncButtonState.RemoteDirty ||
           this.buttonState === SyncButtonState.BothDirty
         ) {
-          new Notice("NoX Sync manual sync flow will be implemented in a later milestone.");
+          await this.executeManualSync();
         }
         return;
 
@@ -329,6 +399,499 @@ export default class NoxSyncPlugin extends Plugin {
         }
         return;
     }
+  }
+
+  private async executeManualSync(): Promise<void> {
+    if (!this.hasCredentials()) {
+      this.setButtonState(SyncButtonState.AuthFailed);
+      new Notice("Invalid NoX Sync API key. Check NoX Sync settings.");
+      return;
+    }
+
+    let sessionId: string | null = null;
+    let committed = false;
+
+    try {
+      this.clearManifestScanTimer();
+
+      const begin = await this.beginSync();
+      sessionId = begin.sessionId;
+      this.setButtonState(SyncButtonState.SyncingLocal);
+
+      const manifest = await this.createLocalManifest();
+      await this.persistPendingDeletedPaths(manifest.deletedPaths);
+
+      const plan = await this.submitManifest(begin.sessionId, manifest);
+      if (plan.sessionId !== begin.sessionId) {
+        throw new Error("Backend returned a sync plan for the wrong session.");
+      }
+
+      const conflicts = plan.actions.filter((action) => action.type === "conflict");
+      if (conflicts.length > 0) {
+        await this.persistPendingConflicts(conflicts);
+        throw new SyncConflictError(conflicts.map((action) => action.path));
+      }
+
+      await this.executeSyncPlan(begin.sessionId, plan, manifest);
+
+      const commit = await this.commitSync(begin.sessionId);
+      committed = true;
+
+      await this.applyCommittedSyncState(manifest, plan, commit.serverRevision);
+      await this.refreshLocalAndBackendStatus();
+      new Notice("NoX Sync complete.");
+    } catch (error) {
+      if (sessionId && !committed) {
+        await this.abortSyncQuietly(sessionId, "Sync failed before commit.");
+      }
+      await this.handleSyncFailure(error);
+    }
+  }
+
+  private async beginSync(): Promise<BeginSyncResponse> {
+    return this.requestJSON<BeginSyncResponse>("/v1/sync/begin", "POST", {
+      clientId: this.settings.clientId,
+      clientName: this.settings.clientName,
+      vaultId: this.settings.vaultId,
+    });
+  }
+
+  private async submitManifest(sessionId: string, manifest: LocalManifest): Promise<SyncPlanResponse> {
+    const request: ManifestRequest = {
+      sessionId,
+      clientId: this.settings.clientId,
+      vaultId: this.settings.vaultId,
+      lastKnownServerRevision: this.settings.lastKnownServerRevision,
+      files: manifest.files,
+      deletedPaths: manifest.deletedPaths,
+    };
+
+    return this.requestJSON<SyncPlanResponse>("/v1/sync/manifest", "POST", request);
+  }
+
+  private async executeSyncPlan(sessionId: string, plan: SyncPlanResponse, manifest: LocalManifest): Promise<void> {
+    for (const action of plan.actions) {
+      switch (action.type) {
+        case "upload":
+          await this.uploadPlannedFile(sessionId, action, manifest);
+          break;
+        case "download":
+          await this.downloadPlannedFile(action, manifest);
+          break;
+        case "delete_local":
+          await this.applyRemoteDelete(action, manifest);
+          break;
+        case "delete_remote":
+          this.assertLocalPathStillAbsent(this.normalizedActionPath(action));
+          break;
+        case "none":
+          break;
+        case "conflict":
+          throw new SyncConflictError([action.path]);
+      }
+    }
+  }
+
+  private async uploadPlannedFile(sessionId: string, action: PlanAction, manifest: LocalManifest): Promise<void> {
+    const path = this.normalizedActionPath(action);
+    const manifestFile = this.requireManifestFile(manifest, path);
+    const expectedHash = action.expectedHash ?? manifestFile.hash;
+    if (expectedHash !== manifestFile.hash) {
+      throw new Error(`Upload plan hash does not match local manifest for ${path}.`);
+    }
+
+    const content = await this.readManifestFileContent(manifestFile);
+    const query = new URLSearchParams({
+      clientId: this.settings.clientId,
+      path,
+      hash: expectedHash,
+      size: String(content.byteLength),
+    });
+
+    await this.requestUpload(`/v1/sync/upload/${encodeURIComponent(sessionId)}?${query.toString()}`, content);
+  }
+
+  private async downloadPlannedFile(action: PlanAction, manifest: LocalManifest): Promise<void> {
+    const downloaded = await this.downloadRemoteFile(action);
+    await this.writeDownloadedFile(action, manifest, downloaded);
+  }
+
+  private async downloadRemoteFile(action: PlanAction): Promise<DownloadedFile> {
+    const path = this.normalizedActionPath(action);
+    const query = new URLSearchParams({ path });
+    const response = await this.requestBinary(`/v1/files/download?${query.toString()}`);
+    const headerHash = responseHeader(response, "X-NoX-Sync-Hash");
+    const expectedHash = action.remoteHash || headerHash;
+    if (!expectedHash) {
+      throw new Error(`Backend did not provide a hash for ${path}.`);
+    }
+    if (headerHash && headerHash !== expectedHash) {
+      throw new Error(`Downloaded hash header does not match the sync plan for ${path}.`);
+    }
+
+    const content = response.arrayBuffer;
+    const actualHash = await sha256Hex(content);
+    if (actualHash !== expectedHash) {
+      throw new Error(`Downloaded file failed SHA-256 verification for ${path}.`);
+    }
+    if (typeof action.size === "number" && action.size >= 0 && content.byteLength !== action.size) {
+      throw new Error(`Downloaded file size does not match the sync plan for ${path}.`);
+    }
+    const headerRevision = numberFromHeader(responseHeader(response, "X-NoX-Sync-Revision"));
+    if (headerRevision !== null && typeof action.revision === "number" && headerRevision !== action.revision) {
+      throw new Error(`Downloaded file revision does not match the sync plan for ${path}.`);
+    }
+
+    return {
+      content,
+      hash: actualHash,
+      revision: headerRevision ?? action.revision ?? 0,
+    };
+  }
+
+  private async writeDownloadedFile(
+    action: PlanAction,
+    manifest: LocalManifest,
+    downloaded: DownloadedFile,
+  ): Promise<void> {
+    const path = this.normalizedActionPath(action);
+    const manifestFile = this.findManifestFile(manifest, path);
+    const currentFile = await this.assertLocalPathStillMatchesManifest(path, manifestFile);
+
+    await this.ensureParentFolders(path);
+    if (currentFile) {
+      await this.moveFileToSyncTrash(currentFile);
+    }
+
+    await this.app.vault.createBinary(path, downloaded.content);
+
+    const written = this.getVaultFile(path);
+    if (!written) {
+      throw new Error(`Downloaded file was not written: ${path}.`);
+    }
+
+    const writtenHash = await this.hashVaultFile(written);
+    if (writtenHash !== downloaded.hash) {
+      throw new Error(`Written file failed SHA-256 verification for ${path}.`);
+    }
+  }
+
+  private async applyRemoteDelete(action: PlanAction, manifest: LocalManifest): Promise<void> {
+    const path = this.normalizedActionPath(action);
+    const manifestFile = this.findManifestFile(manifest, path);
+    const currentFile = await this.assertLocalPathStillMatchesManifest(path, manifestFile);
+
+    if (currentFile) {
+      await this.moveFileToSyncTrash(currentFile);
+    }
+  }
+
+  private async commitSync(sessionId: string): Promise<CommitResponse> {
+    return this.requestJSON<CommitResponse>("/v1/sync/commit", "POST", {
+      sessionId,
+      clientId: this.settings.clientId,
+    });
+  }
+
+  private async abortSyncQuietly(sessionId: string, reason: string): Promise<void> {
+    try {
+      await this.requestJSON("/v1/sync/abort", "POST", {
+        sessionId,
+        clientId: this.settings.clientId,
+        reason,
+      });
+    } catch {
+      // The backend lock will expire if the abort cannot be delivered.
+    }
+  }
+
+  private async requestJSON<T>(path: string, method: string, body?: unknown): Promise<T> {
+    let response;
+    try {
+      response = await requestUrl({
+        url: `${this.normalizedServerUrl()}${path}`,
+        method,
+        headers: {
+          ...this.authHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch {
+      throw new BackendRequestError(0, "SERVER_UNREACHABLE", "NoX Sync server is unreachable.");
+    }
+
+    ensureResponseOK(response);
+    return response.json as T;
+  }
+
+  private async requestUpload(path: string, content: ArrayBuffer): Promise<void> {
+    let response;
+    try {
+      response = await requestUrl({
+        url: `${this.normalizedServerUrl()}${path}`,
+        method: "PUT",
+        headers: {
+          ...this.authHeaders(),
+          "Content-Type": "application/octet-stream",
+        },
+        body: content,
+      });
+    } catch {
+      throw new BackendRequestError(0, "SERVER_UNREACHABLE", "NoX Sync server is unreachable.");
+    }
+
+    ensureResponseOK(response);
+  }
+
+  private async requestBinary(path: string) {
+    let response;
+    try {
+      response = await requestUrl({
+        url: `${this.normalizedServerUrl()}${path}`,
+        method: "GET",
+        headers: this.authHeaders(),
+      });
+    } catch {
+      throw new BackendRequestError(0, "SERVER_UNREACHABLE", "NoX Sync server is unreachable.");
+    }
+
+    ensureResponseOK(response);
+    return response;
+  }
+
+  private async handleSyncFailure(error: unknown): Promise<void> {
+    if (error instanceof SyncConflictError) {
+      this.setButtonState(SyncButtonState.Conflict);
+      new Notice(`NoX Sync found ${error.conflictPaths.length} conflict(s).`);
+      return;
+    }
+
+    if (error instanceof BackendRequestError) {
+      if (error.code === "AUTH_REQUIRED" || error.code === "AUTH_FAILED" || error.status === 401) {
+        this.setButtonState(SyncButtonState.AuthFailed);
+        this.closeStatusStream();
+        new Notice("NoX Sync authentication failed.");
+        return;
+      }
+
+      if (error.code === "SYNC_LOCKED") {
+        await this.refreshBackendStatus();
+        new Notice("NoX Sync is already running on another device.");
+        return;
+      }
+
+      if (error.code === "CONFLICT_DETECTED") {
+        this.setButtonState(SyncButtonState.Conflict);
+        new Notice("NoX Sync conflicts need to be resolved.");
+        return;
+      }
+
+      if (error.code === "SERVER_UNREACHABLE") {
+        this.setButtonState(SyncButtonState.ServerUnreachable);
+        new Notice("NoX Sync server is unreachable. Sync was not completed.");
+        return;
+      }
+
+      this.setButtonState(SyncButtonState.Error, error.message);
+      new Notice(error.message);
+      return;
+    }
+
+    const message = error instanceof Error ? error.message : "NoX Sync failed.";
+    this.setButtonState(SyncButtonState.Error, message);
+    new Notice(message);
+  }
+
+  private async applyCommittedSyncState(
+    manifest: LocalManifest,
+    plan: SyncPlanResponse,
+    serverRevision: number,
+  ): Promise<void> {
+    const knownFileHashes = { ...this.settings.knownFileHashes };
+    const knownFileRevisions = { ...this.settings.knownFileRevisions };
+
+    for (const path of manifest.deletedPaths) {
+      delete knownFileHashes[path];
+      delete knownFileRevisions[path];
+    }
+
+    for (const action of plan.actions) {
+      const path = this.normalizedActionPath(action);
+      const manifestFile = this.findManifestFile(manifest, path);
+
+      switch (action.type) {
+        case "upload":
+          if (!manifestFile) {
+            throw new Error(`Upload action did not match a local manifest file for ${path}.`);
+          }
+          knownFileHashes[path] = action.expectedHash ?? manifestFile.hash;
+          knownFileRevisions[path] = serverRevision;
+          break;
+        case "download":
+          if (!action.remoteHash) {
+            throw new Error(`Download action did not include a remote hash for ${path}.`);
+          }
+          knownFileHashes[path] = action.remoteHash;
+          knownFileRevisions[path] = action.revision ?? serverRevision;
+          break;
+        case "delete_local":
+        case "delete_remote":
+          delete knownFileHashes[path];
+          delete knownFileRevisions[path];
+          break;
+        case "none":
+          if (manifestFile) {
+            knownFileHashes[path] = manifestFile.hash;
+            knownFileRevisions[path] = action.revision ?? manifestFile.lastKnownRevision;
+          } else {
+            delete knownFileHashes[path];
+            delete knownFileRevisions[path];
+          }
+          break;
+        case "conflict":
+          throw new SyncConflictError([path]);
+      }
+    }
+
+    this.settings.knownFileHashes = removeEmptyHashEntries(knownFileHashes);
+    this.settings.knownFileRevisions = knownFileRevisions;
+    this.settings.lastKnownServerRevision = serverRevision;
+    this.settings.pendingDeletedPaths = [];
+    this.settings.pendingConflicts = [];
+    this.localDirty = false;
+    await this.saveSettings();
+  }
+
+  private async persistPendingConflicts(actions: PlanAction[]): Promise<void> {
+    const paths = [...new Set(actions.map((action) => this.normalizedActionPath(action)))].sort();
+    if (arraysEqual(this.settings.pendingConflicts, paths)) {
+      return;
+    }
+
+    this.settings.pendingConflicts = paths;
+    await this.saveSettings();
+  }
+
+  private normalizedActionPath(action: PlanAction): string {
+    const path = normalizeVaultPath(action.path);
+    if (!path) {
+      throw new Error("Backend returned an invalid vault path.");
+    }
+    return path;
+  }
+
+  private requireManifestFile(manifest: LocalManifest, path: string): LocalManifestFile {
+    const file = this.findManifestFile(manifest, path);
+    if (!file) {
+      throw new Error(`Sync plan references a local file that is not in the manifest: ${path}.`);
+    }
+    return file;
+  }
+
+  private findManifestFile(manifest: LocalManifest, path: string): LocalManifestFile | null {
+    return manifest.files.find((file) => file.path === path) ?? null;
+  }
+
+  private async readManifestFileContent(file: LocalManifestFile): Promise<ArrayBuffer> {
+    const vaultFile = this.getVaultFile(file.path);
+    if (!vaultFile) {
+      throw new Error(`Local file disappeared during sync: ${file.path}.`);
+    }
+
+    const content = await this.app.vault.readBinary(vaultFile);
+    const hash = await sha256Hex(content);
+    if (hash !== file.hash) {
+      throw new Error(`Local file changed during sync: ${file.path}.`);
+    }
+    return content;
+  }
+
+  private async assertLocalPathStillMatchesManifest(
+    path: string,
+    manifestFile: LocalManifestFile | null,
+  ): Promise<TFile | null> {
+    const current = this.app.vault.getAbstractFileByPath(path);
+    if (current && !(current instanceof TFile)) {
+      throw new Error(`Local path is not a file: ${path}.`);
+    }
+
+    if (!manifestFile) {
+      if (current) {
+        throw new Error(`Local file appeared during sync: ${path}.`);
+      }
+      return null;
+    }
+
+    if (!current) {
+      throw new Error(`Local file disappeared during sync: ${path}.`);
+    }
+
+    const hash = await this.hashVaultFile(current);
+    if (hash !== manifestFile.hash) {
+      throw new Error(`Local file changed during sync: ${path}.`);
+    }
+
+    return current;
+  }
+
+  private assertLocalPathStillAbsent(path: string): void {
+    if (this.app.vault.getAbstractFileByPath(path) !== null) {
+      throw new Error(`Local file appeared during sync: ${path}.`);
+    }
+  }
+
+  private getVaultFile(path: string): TFile | null {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) {
+      return null;
+    }
+    if (file instanceof TFile) {
+      return file;
+    }
+    throw new Error(`Vault path is not a file: ${path}.`);
+  }
+
+  private async hashVaultFile(file: TFile): Promise<string> {
+    return sha256Hex(await this.app.vault.readBinary(file));
+  }
+
+  private async ensureParentFolders(path: string): Promise<void> {
+    const parent = parentPath(path);
+    if (!parent) {
+      return;
+    }
+
+    let current = "";
+    for (const part of parent.split("/")) {
+      current = current ? `${current}/${part}` : part;
+      const existing = this.app.vault.getAbstractFileByPath(current);
+      if (existing) {
+        if (existing instanceof TFile) {
+          throw new Error(`Cannot create folder because a file exists at ${current}.`);
+        }
+        continue;
+      }
+      await this.app.vault.createFolder(current);
+    }
+  }
+
+  private async moveFileToSyncTrash(file: TFile): Promise<void> {
+    const trashPath = this.nextSyncTrashPath(file.path);
+    await this.ensureParentFolders(trashPath);
+    await this.app.vault.rename(file, trashPath);
+  }
+
+  private nextSyncTrashPath(path: string): string {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const basePath = `${NOX_SYNC_TRASH_ROOT}/${timestamp}/${path}`;
+    let candidate = basePath;
+
+    while (this.app.vault.getAbstractFileByPath(candidate) !== null) {
+      candidate = appendPathSuffix(basePath, `-${randomId().slice(0, 8)}`);
+    }
+
+    return candidate;
   }
 
   private setButtonState(state: SyncButtonState, detail = ""): void {
@@ -506,7 +1069,7 @@ export default class NoxSyncPlugin extends Plugin {
   }
 
   private shouldExcludePath(path: string): boolean {
-    if (isPluginInternalPath(path)) {
+    if (isPluginInternalPath(path) || isNoxSyncTrashPath(path)) {
       return true;
     }
 
@@ -787,6 +1350,10 @@ function isPluginInternalPath(path: string): boolean {
   return path === ".obsidian/plugins/nox-sync" || path.startsWith(".obsidian/plugins/nox-sync/");
 }
 
+function isNoxSyncTrashPath(path: string): boolean {
+  return path === NOX_SYNC_TRASH_ROOT || path.startsWith(`${NOX_SYNC_TRASH_ROOT}/`);
+}
+
 function isHiddenPath(path: string): boolean {
   return path.split("/").some((part) => part.startsWith("."));
 }
@@ -794,6 +1361,65 @@ function isHiddenPath(path: string): boolean {
 async function sha256Hex(content: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", content);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function ensureResponseOK(response: { status: number; json: unknown }): void {
+  if (response.status >= 200 && response.status < 300) {
+    return;
+  }
+
+  const backendError = isBackendErrorResponse(response.json) ? response.json : {};
+  throw new BackendRequestError(
+    response.status,
+    backendError.code ?? "HTTP_ERROR",
+    backendError.message ?? `NoX Sync backend returned HTTP ${response.status}.`,
+  );
+}
+
+function isBackendErrorResponse(value: unknown): value is BackendErrorResponse {
+  return typeof value === "object" && value !== null;
+}
+
+function responseHeader(response: { headers?: Record<string, string> }, name: string): string {
+  const headers = response.headers ?? {};
+  const lowerName = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lowerName) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function numberFromHeader(value: string): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function removeEmptyHashEntries(hashes: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(hashes).filter(([, hash]) => hash !== ""));
+}
+
+function parentPath(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index === -1 ? "" : path.slice(0, index);
+}
+
+function appendPathSuffix(path: string, suffix: string): string {
+  const slashIndex = path.lastIndexOf("/");
+  const directory = slashIndex === -1 ? "" : path.slice(0, slashIndex + 1);
+  const filename = slashIndex === -1 ? path : path.slice(slashIndex + 1);
+  const dotIndex = filename.lastIndexOf(".");
+
+  if (dotIndex <= 0) {
+    return `${directory}${filename}${suffix}`;
+  }
+
+  return `${directory}${filename.slice(0, dotIndex)}${suffix}${filename.slice(dotIndex)}`;
 }
 
 function arraysEqual(left: string[], right: string[]): boolean {
