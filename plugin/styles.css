@@ -1,0 +1,55 @@
+.nox-sync-ribbon {
+  --nox-sync-progress: 0%;
+  --nox-sync-status-color: transparent;
+  opacity: 1;
+  position: relative;
+}
+
+.nox-sync-ribbon::after {
+  background:
+    conic-gradient(
+      var(--nox-sync-status-color) var(--nox-sync-progress),
+      transparent 0
+    );
+  border-radius: 999px;
+  content: "";
+  inset: -3px;
+  mask: radial-gradient(circle, transparent 58%, black 60%);
+  pointer-events: none;
+  position: absolute;
+}
+
+.nox-sync-state-unknown,
+.nox-sync-state-synced {
+  opacity: 0.45;
+}
+
+.nox-sync-state-local_dirty,
+.nox-sync-state-remote_dirty,
+.nox-sync-state-both_dirty {
+  opacity: 1;
+}
+
+.nox-sync-state-syncing_local {
+  --nox-sync-progress: 25%;
+  --nox-sync-status-color: #22c55e;
+  opacity: 0.65;
+}
+
+.nox-sync-state-both_dirty,
+.nox-sync-state-conflict {
+  --nox-sync-progress: 100%;
+  --nox-sync-status-color: #f97316;
+}
+
+.nox-sync-state-server_unreachable,
+.nox-sync-state-error,
+.nox-sync-state-auth_failed {
+  --nox-sync-progress: 100%;
+  --nox-sync-status-color: #ef4444;
+  opacity: 0.65;
+}
+
+.nox-sync-state-blocked_remote {
+  opacity: 0.65;
+}

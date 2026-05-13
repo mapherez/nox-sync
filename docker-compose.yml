@@ -1,0 +1,11 @@
+services:
+  nox-sync:
+    build:
+      context: ./backend
+    image: nox-sync:dev
+    container_name: nox-sync
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data

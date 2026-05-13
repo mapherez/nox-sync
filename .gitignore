@@ -1,0 +1,21 @@
+# Backend
+backend/bin/
+backend/coverage.out
+
+# Plugin
+plugin/node_modules/
+plugin/dist/
+plugin/*.tsbuildinfo
+
+# Local runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs and OS/editor noise
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
