@@ -11,7 +11,7 @@ The product rules and implementation milestones live in `SPECS/`.
 
 ## Current State
 
-This repository is at Milestone 3:
+This repository is at Milestone 4:
 
 - backend skeleton
 - plugin skeleton
@@ -32,11 +32,17 @@ This repository is at Milestone 3:
 - plugin button state machine for backend/auth/reachability/sync-lock states
 - official plugin button colors, opacity values, icons, and progress ring
 - plugin SSE status stream handling with explicit status-check fallback
+- local vault manifest scanner with normalized paths, SHA-256 hashes, sizes, deletes, and last-known revisions
+- plugin-local settings, credentials, and sync state excluded from the manifest
+- local dirty detection from Obsidian create, modify, delete, and rename events
+- full local manifest scan before manual sync/status correction
+- remote/local dirty state derivation from backend revision plus local pending state
+- Sync hidden files setting, with NoX Sync plugin data still excluded
 - Docker scaffolding
 - fixture vaults
 - naming conventions
 
-The plugin file sync engine is not implemented yet. Later milestones add local manifest scanning, dirty detection, end-to-end sync execution from Obsidian, and user-facing conflict resolution.
+The plugin file sync engine is not implemented yet. Later milestones add end-to-end sync execution from Obsidian and user-facing conflict resolution.
 
 ## Development
 

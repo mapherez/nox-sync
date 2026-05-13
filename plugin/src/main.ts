@@ -1,4 +1,4 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, requestUrl, setIcon } from "obsidian";
+import { App, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, requestUrl, setIcon } from "obsidian";
 
 enum SyncButtonState {
   Unknown = "UNKNOWN",
@@ -25,6 +25,7 @@ interface NoxSyncSettings {
   knownFileRevisions: Record<string, number>;
   pendingDeletedPaths: string[];
   pendingConflicts: string[];
+  syncHiddenFiles: boolean;
 }
 
 interface BackendStatusResponse {
@@ -38,6 +39,20 @@ interface BackendStatusResponse {
   };
 }
 
+interface LocalManifest {
+  generatedAt: string;
+  files: LocalManifestFile[];
+  deletedPaths: string[];
+}
+
+interface LocalManifestFile {
+  path: string;
+  hash: string;
+  size: number;
+  lastKnownRevision: number;
+  deleted: false;
+}
+
 const DEFAULT_SETTINGS: NoxSyncSettings = {
   serverUrl: "",
   apiKey: "",
@@ -49,6 +64,7 @@ const DEFAULT_SETTINGS: NoxSyncSettings = {
   knownFileRevisions: {},
   pendingDeletedPaths: [],
   pendingConflicts: [],
+  syncHiddenFiles: false,
 };
 
 const STATE_CLASSES = Object.values(SyncButtonState).map(
@@ -62,6 +78,9 @@ export default class NoxSyncPlugin extends Plugin {
   private statusEvents: EventSource | null = null;
   private reconnectTimer: number | null = null;
   private settingsRefreshTimer: number | null = null;
+  private manifestScanTimer: number | null = null;
+  private latestBackendStatus: BackendStatusResponse | null = null;
+  private localDirty = false;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -81,15 +100,21 @@ export default class NoxSyncPlugin extends Plugin {
     });
 
     this.addSettingTab(new NoxSyncSettingTab(this.app, this));
+    this.registerVaultEventHandlers();
     this.setButtonState(SyncButtonState.Unknown);
-    await this.refreshBackendStatus();
-    this.connectStatusStream();
+    if (await this.refreshLocalManifestState()) {
+      const connected = await this.refreshBackendStatus();
+      if (connected) {
+        this.connectStatusStream();
+      }
+    }
   }
 
   onunload(): void {
     this.closeStatusStream();
     this.clearReconnectTimer();
     this.clearSettingsRefreshTimer();
+    this.clearManifestScanTimer();
   }
 
   async loadSettings(): Promise<void> {
@@ -140,7 +165,7 @@ export default class NoxSyncPlugin extends Plugin {
     this.clearSettingsRefreshTimer();
     this.settingsRefreshTimer = window.setTimeout(() => {
       this.settingsRefreshTimer = null;
-      void this.refreshBackendStatus().then((ok) => {
+      void this.refreshLocalAndBackendStatus().then((ok) => {
         if (ok) {
           this.connectStatusStream();
         }
@@ -169,6 +194,29 @@ export default class NoxSyncPlugin extends Plugin {
     if (changed) {
       await this.saveSettings();
     }
+  }
+
+  private registerVaultEventHandlers(): void {
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        this.handleVaultChanged(file);
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        this.handleVaultChanged(file);
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        void this.handleVaultDeleted(file);
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        void this.handleVaultRenamed(file, oldPath);
+      }),
+    );
   }
 
   private async refreshBackendStatus(): Promise<boolean> {
@@ -204,10 +252,35 @@ export default class NoxSyncPlugin extends Plugin {
     }
   }
 
+  private async refreshLocalAndBackendStatus(): Promise<boolean> {
+    if (!(await this.refreshLocalManifestState())) {
+      return false;
+    }
+
+    return this.refreshBackendStatus();
+  }
+
+  private async refreshLocalManifestState(): Promise<boolean> {
+    try {
+      const manifest = await this.createLocalManifest();
+      this.localDirty = this.manifestHasLocalChanges(manifest);
+      await this.persistPendingDeletedPaths(manifest.deletedPaths);
+
+      if (this.latestBackendStatus) {
+        this.applyBackendStatus(this.latestBackendStatus);
+      }
+
+      return true;
+    } catch {
+      this.setButtonState(SyncButtonState.Error, "NoX Sync could not scan the local vault.");
+      return false;
+    }
+  }
+
   private async handleManualSync(): Promise<void> {
     switch (this.buttonState) {
       case SyncButtonState.Synced:
-        await this.refreshBackendStatus();
+        await this.refreshLocalAndBackendStatus();
         if (this.buttonState === SyncButtonState.Synced) {
           new Notice("NoX Sync: nothing to sync.");
         }
@@ -233,13 +306,13 @@ export default class NoxSyncPlugin extends Plugin {
         return;
 
       case SyncButtonState.Unknown:
-        await this.refreshBackendStatus();
+        await this.refreshLocalAndBackendStatus();
         return;
 
       case SyncButtonState.LocalDirty:
       case SyncButtonState.RemoteDirty:
       case SyncButtonState.BothDirty:
-        await this.refreshBackendStatus();
+        await this.refreshLocalAndBackendStatus();
         if (
           this.buttonState === SyncButtonState.LocalDirty ||
           this.buttonState === SyncButtonState.RemoteDirty ||
@@ -250,7 +323,7 @@ export default class NoxSyncPlugin extends Plugin {
         return;
 
       case SyncButtonState.Error:
-        await this.refreshBackendStatus();
+        await this.refreshLocalAndBackendStatus();
         if (this.buttonState === SyncButtonState.Error) {
           new Notice("The previous NoX Sync sync failed.");
         }
@@ -274,6 +347,8 @@ export default class NoxSyncPlugin extends Plugin {
   }
 
   private applyBackendStatus(status: BackendStatusResponse): void {
+    this.latestBackendStatus = status;
+
     if (this.settings.pendingConflicts.length > 0) {
       this.setButtonState(SyncButtonState.Conflict);
       return;
@@ -314,7 +389,128 @@ export default class NoxSyncPlugin extends Plugin {
   }
 
   private hasLocalPendingState(): boolean {
-    return this.settings.pendingDeletedPaths.length > 0;
+    return this.localDirty || this.settings.pendingDeletedPaths.length > 0;
+  }
+
+  private async createLocalManifest(): Promise<LocalManifest> {
+    const files: LocalManifestFile[] = [];
+    const seenPaths = new Set<string>();
+
+    for (const file of this.app.vault.getFiles()) {
+      const normalizedPath = normalizeVaultPath(file.path);
+      if (!normalizedPath || this.shouldExcludePath(normalizedPath)) {
+        continue;
+      }
+
+      const content = await this.app.vault.readBinary(file);
+      const hash = await sha256Hex(content);
+      const size = file.stat?.size ?? content.byteLength;
+      const lastKnownRevision = this.settings.knownFileRevisions[normalizedPath] ?? 0;
+
+      seenPaths.add(normalizedPath);
+      files.push({
+        path: normalizedPath,
+        hash,
+        size,
+        lastKnownRevision,
+        deleted: false,
+      });
+    }
+
+    const deletedPaths = Object.keys(this.settings.knownFileHashes)
+      .map((path) => normalizeVaultPath(path))
+      .filter((path): path is string => path !== null && !this.shouldExcludePath(path) && !seenPaths.has(path))
+      .sort();
+
+    files.sort((a, b) => a.path.localeCompare(b.path));
+
+    return {
+      generatedAt: new Date().toISOString(),
+      files,
+      deletedPaths,
+    };
+  }
+
+  private manifestHasLocalChanges(manifest: LocalManifest): boolean {
+    if (manifest.deletedPaths.length > 0) {
+      return true;
+    }
+
+    return manifest.files.some((file) => this.settings.knownFileHashes[file.path] !== file.hash);
+  }
+
+  private async persistPendingDeletedPaths(deletedPaths: string[]): Promise<void> {
+    const normalized = [...new Set(deletedPaths)].sort();
+    if (arraysEqual(this.settings.pendingDeletedPaths, normalized)) {
+      return;
+    }
+
+    this.settings.pendingDeletedPaths = normalized;
+    await this.saveSettings();
+  }
+
+  private handleVaultChanged(file: TAbstractFile): void {
+    const normalizedPath = normalizeVaultPath(file.path);
+    if (!normalizedPath || this.shouldExcludePath(normalizedPath)) {
+      return;
+    }
+
+    this.localDirty = true;
+    this.applyLatestStatus();
+    this.scheduleManifestScan();
+  }
+
+  private async handleVaultDeleted(file: TAbstractFile): Promise<void> {
+    const normalizedPath = normalizeVaultPath(file.path);
+    if (!normalizedPath || this.shouldExcludePath(normalizedPath)) {
+      return;
+    }
+
+    if (this.settings.knownFileHashes[normalizedPath]) {
+      const deletedPaths = [...new Set([...this.settings.pendingDeletedPaths, normalizedPath])].sort();
+      this.settings.pendingDeletedPaths = deletedPaths;
+      await this.saveSettings();
+    }
+
+    this.localDirty = true;
+    this.applyLatestStatus();
+    this.scheduleManifestScan();
+  }
+
+  private async handleVaultRenamed(file: TAbstractFile, oldPath: string): Promise<void> {
+    await this.handleVaultDeleted({ path: oldPath } as TAbstractFile);
+    this.handleVaultChanged(file);
+  }
+
+  private scheduleManifestScan(): void {
+    this.clearManifestScanTimer();
+    this.manifestScanTimer = window.setTimeout(() => {
+      this.manifestScanTimer = null;
+      void this.refreshLocalManifestState();
+    }, 1500);
+  }
+
+  private clearManifestScanTimer(): void {
+    if (this.manifestScanTimer !== null) {
+      window.clearTimeout(this.manifestScanTimer);
+      this.manifestScanTimer = null;
+    }
+  }
+
+  private applyLatestStatus(): void {
+    if (this.latestBackendStatus) {
+      this.applyBackendStatus(this.latestBackendStatus);
+    } else if (this.localDirty) {
+      this.setButtonState(SyncButtonState.LocalDirty);
+    }
+  }
+
+  private shouldExcludePath(path: string): boolean {
+    if (isPluginInternalPath(path)) {
+      return true;
+    }
+
+    return !this.settings.syncHiddenFiles && isHiddenPath(path);
   }
 
   private connectStatusStream(): void {
@@ -464,6 +660,17 @@ class NoxSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Sync hidden files")
+      .setDesc("Includes dot-prefixed vault files, while still excluding NoX Sync plugin data.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.syncHiddenFiles).onChange(async (value) => {
+          this.plugin.settings.syncHiddenFiles = value;
+          await this.plugin.saveSettings();
+          this.plugin.queueSettingsRefresh();
+        }),
+      );
+
+    new Setting(containerEl)
       .setName("Test connection")
       .setDesc("Checks that the backend is reachable and the API key is valid.")
       .addButton((button) =>
@@ -554,4 +761,45 @@ function randomId(): string {
   }
 
   return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeVaultPath(rawPath: string): string | null {
+  const normalized = rawPath.trim().replaceAll("\\", "/").replace(/^\/+/, "");
+  if (normalized === "" || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  for (const part of normalized.split("/")) {
+    if (part === "" || part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      return null;
+    }
+    parts.push(part);
+  }
+
+  return parts.length > 0 ? parts.join("/") : null;
+}
+
+function isPluginInternalPath(path: string): boolean {
+  return path === ".obsidian/plugins/nox-sync" || path.startsWith(".obsidian/plugins/nox-sync/");
+}
+
+function isHiddenPath(path: string): boolean {
+  return path.split("/").some((part) => part.startsWith("."));
+}
+
+async function sha256Hex(content: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", content);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function arraysEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((value, index) => value === right[index]);
 }
