@@ -11,7 +11,7 @@ The product rules and implementation milestones live in `SPECS/`.
 
 ## Current State
 
-This repository is at Milestone 2:
+This repository is at Milestone 3:
 
 - backend skeleton
 - plugin skeleton
@@ -26,11 +26,17 @@ This repository is at Milestone 2:
 - staged upload SHA-256 validation
 - content-addressed blob promotion on commit
 - current/previous backend file metadata and tombstones
+- plugin settings for Server URL, API key, client name, Vault ID, and Test connection
+- generated local plugin client ID and vault ID
+- Obsidian ribbon sync button and `NoX Sync: Sync vault` command
+- plugin button state machine for backend/auth/reachability/sync-lock states
+- official plugin button colors, opacity values, icons, and progress ring
+- plugin SSE status stream handling with explicit status-check fallback
 - Docker scaffolding
 - fixture vaults
 - naming conventions
 
-The plugin sync engine is not implemented yet. Later milestones add plugin dirty detection, end-to-end sync execution from Obsidian, and user-facing conflict resolution.
+The plugin file sync engine is not implemented yet. Later milestones add local manifest scanning, dirty detection, end-to-end sync execution from Obsidian, and user-facing conflict resolution.
 
 ## Development
 

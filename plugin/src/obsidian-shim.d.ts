@@ -47,6 +47,8 @@ declare module "obsidian" {
     constructor(message: string, timeout?: number);
   }
 
+  export function setIcon(parent: HTMLElement, iconId: string): void;
+
   export interface RequestUrlParam {
     url: string;
     method?: string;

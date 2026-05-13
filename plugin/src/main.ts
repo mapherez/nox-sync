@@ -1,4 +1,4 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, requestUrl } from "obsidian";
+import { App, Notice, Plugin, PluginSettingTab, Setting, requestUrl, setIcon } from "obsidian";
 
 enum SyncButtonState {
   Unknown = "UNKNOWN",
@@ -27,6 +27,17 @@ interface NoxSyncSettings {
   pendingConflicts: string[];
 }
 
+interface BackendStatusResponse {
+  serverRevision: number;
+  sync: {
+    state: string;
+    sessionId: string;
+    clientId: string;
+    clientName: string;
+    startedAt: string;
+  };
+}
+
 const DEFAULT_SETTINGS: NoxSyncSettings = {
   serverUrl: "",
   apiKey: "",
@@ -48,19 +59,22 @@ export default class NoxSyncPlugin extends Plugin {
   settings: NoxSyncSettings = { ...DEFAULT_SETTINGS };
   private ribbonButtonEl: HTMLElement | null = null;
   private buttonState = SyncButtonState.Unknown;
+  private statusEvents: EventSource | null = null;
+  private reconnectTimer: number | null = null;
+  private settingsRefreshTimer: number | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
     await this.ensureLocalIdentity();
 
-    this.ribbonButtonEl = this.addRibbonIcon("sync", "Checking NoX Sync status...", () => {
+    this.ribbonButtonEl = this.addRibbonIcon("refresh-cw", "Checking NoX Sync status...", () => {
       void this.handleManualSync();
     });
     this.ribbonButtonEl.addClass("nox-sync-ribbon");
 
     this.addCommand({
       id: "sync-vault",
-      name: "Sync vault",
+      name: "NoX Sync: Sync vault",
       callback: () => {
         void this.handleManualSync();
       },
@@ -69,6 +83,13 @@ export default class NoxSyncPlugin extends Plugin {
     this.addSettingTab(new NoxSyncSettingTab(this.app, this));
     this.setButtonState(SyncButtonState.Unknown);
     await this.refreshBackendStatus();
+    this.connectStatusStream();
+  }
+
+  onunload(): void {
+    this.closeStatusStream();
+    this.clearReconnectTimer();
+    this.clearSettingsRefreshTimer();
   }
 
   async loadSettings(): Promise<void> {
@@ -88,13 +109,14 @@ export default class NoxSyncPlugin extends Plugin {
 
     try {
       const response = await requestUrl({
-        url: `${this.normalizedServerUrl()}/v1/health`,
+        url: `${this.normalizedServerUrl()}/v1/auth/check`,
         method: "GET",
         headers: this.authHeaders(),
       });
 
       if (response.status === 401 || response.status === 403) {
         this.setButtonState(SyncButtonState.AuthFailed);
+        this.closeStatusStream();
         new Notice("NoX Sync authentication failed.");
         return;
       }
@@ -106,11 +128,24 @@ export default class NoxSyncPlugin extends Plugin {
       }
 
       await this.refreshBackendStatus();
+      this.connectStatusStream();
       new Notice("NoX Sync connection successful.");
     } catch {
       this.setButtonState(SyncButtonState.ServerUnreachable);
       new Notice("NoX Sync server is unreachable.");
     }
+  }
+
+  queueSettingsRefresh(): void {
+    this.clearSettingsRefreshTimer();
+    this.settingsRefreshTimer = window.setTimeout(() => {
+      this.settingsRefreshTimer = null;
+      void this.refreshBackendStatus().then((ok) => {
+        if (ok) {
+          this.connectStatusStream();
+        }
+      });
+    }, 350);
   }
 
   private async ensureLocalIdentity(): Promise<void> {
@@ -136,10 +171,11 @@ export default class NoxSyncPlugin extends Plugin {
     }
   }
 
-  private async refreshBackendStatus(): Promise<void> {
+  private async refreshBackendStatus(): Promise<boolean> {
     if (!this.hasCredentials()) {
       this.setButtonState(SyncButtonState.AuthFailed);
-      return;
+      this.closeStatusStream();
+      return false;
     }
 
     try {
@@ -151,28 +187,20 @@ export default class NoxSyncPlugin extends Plugin {
 
       if (response.status === 401 || response.status === 403) {
         this.setButtonState(SyncButtonState.AuthFailed);
-        return;
+        this.closeStatusStream();
+        return false;
       }
 
       if (response.status < 200 || response.status >= 300) {
         this.setButtonState(SyncButtonState.ServerUnreachable);
-        return;
+        return false;
       }
 
-      const status = response.json as BackendStatusResponse;
-      const syncState = status.sync?.state;
-      if (syncState === "SYNCING") {
-        const state =
-          status.sync.clientId === this.settings.clientId
-            ? SyncButtonState.SyncingLocal
-            : SyncButtonState.BlockedRemote;
-        this.setButtonState(state, status.sync.clientName);
-        return;
-      }
-
-      this.setButtonState(SyncButtonState.Synced);
+      this.applyBackendStatus(response.json as BackendStatusResponse);
+      return true;
     } catch {
       this.setButtonState(SyncButtonState.ServerUnreachable);
+      return false;
     }
   }
 
@@ -180,34 +208,57 @@ export default class NoxSyncPlugin extends Plugin {
     switch (this.buttonState) {
       case SyncButtonState.Synced:
         await this.refreshBackendStatus();
-        new Notice("NoX Sync: nothing to sync.");
+        if (this.buttonState === SyncButtonState.Synced) {
+          new Notice("NoX Sync: nothing to sync.");
+        }
         return;
+
       case SyncButtonState.ServerUnreachable:
         await this.refreshBackendStatus();
         if (this.buttonState === SyncButtonState.ServerUnreachable) {
           new Notice("NoX Sync server is unreachable. Sync was not started.");
         }
         return;
+
       case SyncButtonState.AuthFailed:
         new Notice("Invalid NoX Sync API key. Check NoX Sync settings.");
         return;
+
       case SyncButtonState.BlockedRemote:
       case SyncButtonState.SyncingLocal:
         return;
+
       case SyncButtonState.Conflict:
         new Notice("NoX Sync conflicts need to be resolved.");
         return;
+
       case SyncButtonState.Unknown:
+        await this.refreshBackendStatus();
+        return;
+
       case SyncButtonState.LocalDirty:
       case SyncButtonState.RemoteDirty:
       case SyncButtonState.BothDirty:
+        await this.refreshBackendStatus();
+        if (
+          this.buttonState === SyncButtonState.LocalDirty ||
+          this.buttonState === SyncButtonState.RemoteDirty ||
+          this.buttonState === SyncButtonState.BothDirty
+        ) {
+          new Notice("NoX Sync manual sync flow will be implemented in a later milestone.");
+        }
+        return;
+
       case SyncButtonState.Error:
-        new Notice("NoX Sync manual sync flow will be implemented in a later milestone.");
+        await this.refreshBackendStatus();
+        if (this.buttonState === SyncButtonState.Error) {
+          new Notice("The previous NoX Sync sync failed.");
+        }
         return;
     }
   }
 
-  private setButtonState(state: SyncButtonState, remoteClientName = ""): void {
+  private setButtonState(state: SyncButtonState, detail = ""): void {
     this.buttonState = state;
 
     if (!this.ribbonButtonEl) {
@@ -217,8 +268,115 @@ export default class NoxSyncPlugin extends Plugin {
     this.ribbonButtonEl.removeClasses(STATE_CLASSES);
     this.ribbonButtonEl.addClass(`nox-sync-state-${state.toLowerCase()}`);
     this.ribbonButtonEl.setAttr("aria-disabled", String(isDisabledState(state)));
-    this.ribbonButtonEl.setAttr("aria-label", tooltipForState(state, remoteClientName));
-    this.ribbonButtonEl.setAttr("title", tooltipForState(state, remoteClientName));
+    this.ribbonButtonEl.setAttr("aria-label", tooltipForState(state, detail));
+    this.ribbonButtonEl.setAttr("title", tooltipForState(state, detail));
+    setIcon(this.ribbonButtonEl, iconForState(state));
+  }
+
+  private applyBackendStatus(status: BackendStatusResponse): void {
+    if (this.settings.pendingConflicts.length > 0) {
+      this.setButtonState(SyncButtonState.Conflict);
+      return;
+    }
+
+    const syncState = status.sync?.state ?? "IDLE";
+    if (syncState === "SYNCING") {
+      const state =
+        status.sync.clientId === this.settings.clientId
+          ? SyncButtonState.SyncingLocal
+          : SyncButtonState.BlockedRemote;
+      this.setButtonState(state, status.sync.clientName);
+      return;
+    }
+
+    if (syncState === "FAILED") {
+      this.setButtonState(SyncButtonState.Error, "The previous NoX Sync sync failed.");
+      return;
+    }
+
+    if (syncState === "STALE_LOCK") {
+      this.setButtonState(SyncButtonState.Error, "A previous sync lock became stale.");
+      return;
+    }
+
+    const remoteDirty = status.serverRevision > this.settings.lastKnownServerRevision;
+    const localDirty = this.hasLocalPendingState();
+
+    if (localDirty && remoteDirty) {
+      this.setButtonState(SyncButtonState.BothDirty);
+    } else if (localDirty) {
+      this.setButtonState(SyncButtonState.LocalDirty);
+    } else if (remoteDirty) {
+      this.setButtonState(SyncButtonState.RemoteDirty);
+    } else {
+      this.setButtonState(SyncButtonState.Synced);
+    }
+  }
+
+  private hasLocalPendingState(): boolean {
+    return this.settings.pendingDeletedPaths.length > 0;
+  }
+
+  private connectStatusStream(): void {
+    this.closeStatusStream();
+    this.clearReconnectTimer();
+
+    if (!this.hasCredentials() || typeof EventSource === "undefined") {
+      return;
+    }
+
+    const url = `${this.normalizedServerUrl()}/v1/sync/events?api_key=${encodeURIComponent(
+      this.settings.apiKey.trim(),
+    )}`;
+    const events = new EventSource(url);
+    this.statusEvents = events;
+
+    events.addEventListener("status", (event: MessageEvent<string>) => {
+      try {
+        this.applyBackendStatus(JSON.parse(event.data) as BackendStatusResponse);
+      } catch {
+        this.setButtonState(SyncButtonState.Error, "NoX Sync received an invalid status update.");
+      }
+    });
+
+    events.onerror = () => {
+      this.closeStatusStream();
+      void this.refreshBackendStatus();
+      this.scheduleStatusReconnect();
+    };
+  }
+
+  private closeStatusStream(): void {
+    if (this.statusEvents) {
+      this.statusEvents.close();
+      this.statusEvents = null;
+    }
+  }
+
+  private scheduleStatusReconnect(): void {
+    this.clearReconnectTimer();
+    if (!this.hasCredentials()) {
+      return;
+    }
+
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectStatusStream();
+    }, 5000);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private clearSettingsRefreshTimer(): void {
+    if (this.settingsRefreshTimer !== null) {
+      window.clearTimeout(this.settingsRefreshTimer);
+      this.settingsRefreshTimer = null;
+    }
   }
 
   private hasCredentials(): boolean {
@@ -260,6 +418,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.serverUrl = value.trim();
             await this.plugin.saveSettings();
+            this.plugin.queueSettingsRefresh();
           }),
       );
 
@@ -274,6 +433,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.apiKey = value.trim();
             await this.plugin.saveSettings();
+            this.plugin.queueSettingsRefresh();
           });
       });
 
@@ -305,7 +465,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Test connection")
-      .setDesc("Checks that the backend is reachable.")
+      .setDesc("Checks that the backend is reachable and the API key is valid.")
       .addButton((button) =>
         button
           .setButtonText("Test connection")
@@ -317,18 +477,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
   }
 }
 
-interface BackendStatusResponse {
-  serverRevision: number;
-  sync: {
-    state: string;
-    sessionId: string;
-    clientId: string;
-    clientName: string;
-    startedAt: string;
-  };
-}
-
-function tooltipForState(state: SyncButtonState, remoteClientName = ""): string {
+function tooltipForState(state: SyncButtonState, detail = ""): string {
   switch (state) {
     case SyncButtonState.Unknown:
       return "Checking NoX Sync status...";
@@ -343,15 +492,42 @@ function tooltipForState(state: SyncButtonState, remoteClientName = ""): string 
     case SyncButtonState.SyncingLocal:
       return "Syncing vault...";
     case SyncButtonState.BlockedRemote:
-      return remoteClientName ? `Sync in progress on ${remoteClientName}.` : "Sync in progress on another device.";
+      return detail ? `Sync in progress on ${detail}.` : "Sync in progress on another device.";
     case SyncButtonState.ServerUnreachable:
       return "NoX Sync server unavailable.";
     case SyncButtonState.Conflict:
       return "Conflicts pending.";
     case SyncButtonState.Error:
-      return "The previous NoX Sync sync failed.";
+      return detail || "The previous NoX Sync sync failed.";
     case SyncButtonState.AuthFailed:
       return "Authentication failed. Check NoX Sync settings.";
+  }
+}
+
+function iconForState(state: SyncButtonState): string {
+  switch (state) {
+    case SyncButtonState.Unknown:
+      return "refresh-cw";
+    case SyncButtonState.Synced:
+      return "check-circle";
+    case SyncButtonState.LocalDirty:
+      return "upload-cloud";
+    case SyncButtonState.RemoteDirty:
+      return "download-cloud";
+    case SyncButtonState.BothDirty:
+      return "alert-triangle";
+    case SyncButtonState.SyncingLocal:
+      return "refresh-cw";
+    case SyncButtonState.BlockedRemote:
+      return "lock";
+    case SyncButtonState.ServerUnreachable:
+      return "wifi-off";
+    case SyncButtonState.Conflict:
+      return "alert-octagon";
+    case SyncButtonState.Error:
+      return "x-circle";
+    case SyncButtonState.AuthFailed:
+      return "key-round";
   }
 }
 

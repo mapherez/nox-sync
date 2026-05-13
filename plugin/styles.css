@@ -1,6 +1,9 @@
 .nox-sync-ribbon {
+  --nox-sync-error: #ef4444;
   --nox-sync-progress: 0%;
   --nox-sync-status-color: transparent;
+  --nox-sync-success: #22c55e;
+  --nox-sync-warning: #f97316;
   opacity: 1;
   position: relative;
 }
@@ -24,32 +27,48 @@
   opacity: 0.45;
 }
 
+.nox-sync-state-synced {
+  color: var(--nox-sync-success);
+}
+
 .nox-sync-state-local_dirty,
 .nox-sync-state-remote_dirty,
 .nox-sync-state-both_dirty {
   opacity: 1;
 }
 
+.nox-sync-state-local_dirty {
+  color: var(--nox-sync-success);
+}
+
+.nox-sync-state-remote_dirty {
+  color: var(--nox-sync-warning);
+}
+
 .nox-sync-state-syncing_local {
   --nox-sync-progress: 25%;
-  --nox-sync-status-color: #22c55e;
+  --nox-sync-status-color: var(--nox-sync-success);
+  color: var(--nox-sync-success);
   opacity: 0.65;
 }
 
 .nox-sync-state-both_dirty,
 .nox-sync-state-conflict {
   --nox-sync-progress: 100%;
-  --nox-sync-status-color: #f97316;
+  --nox-sync-status-color: var(--nox-sync-warning);
+  color: var(--nox-sync-warning);
 }
 
 .nox-sync-state-server_unreachable,
 .nox-sync-state-error,
 .nox-sync-state-auth_failed {
   --nox-sync-progress: 100%;
-  --nox-sync-status-color: #ef4444;
+  --nox-sync-status-color: var(--nox-sync-error);
+  color: var(--nox-sync-error);
   opacity: 0.65;
 }
 
 .nox-sync-state-blocked_remote {
+  color: var(--nox-sync-warning);
   opacity: 0.65;
 }
