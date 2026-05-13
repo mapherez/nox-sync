@@ -74,13 +74,14 @@ type SyncPlan struct {
 
 // PlanAction is one action in a sync plan.
 type PlanAction struct {
-	Type         string `json:"type"`
-	Path         string `json:"path"`
-	ExpectedHash string `json:"expectedHash,omitempty"`
-	RemoteHash   string `json:"remoteHash,omitempty"`
-	BaseHash     string `json:"baseHash,omitempty"`
-	Size         int64  `json:"size,omitempty"`
-	Revision     int64  `json:"revision,omitempty"`
+	Type          string `json:"type"`
+	Path          string `json:"path"`
+	ExpectedHash  string `json:"expectedHash,omitempty"`
+	RemoteHash    string `json:"remoteHash,omitempty"`
+	BaseHash      string `json:"baseHash,omitempty"`
+	Size          int64  `json:"size,omitempty"`
+	Revision      int64  `json:"revision,omitempty"`
+	RemoteDeleted bool   `json:"remoteDeleted,omitempty"`
 }
 
 // CommitRequest commits a validated sync session.

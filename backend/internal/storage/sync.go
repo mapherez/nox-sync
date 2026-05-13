@@ -13,7 +13,7 @@ import (
 
 const (
 	lockTTL               = 2 * time.Minute
-	heartbeatAfter       = 10 * time.Second
+	heartbeatAfter        = 10 * time.Second
 	defaultClientName     = "Unknown client"
 	syncSessionIDPrefix   = "sync_"
 	conflictIDPrefix      = "conflict_"
@@ -22,12 +22,12 @@ const (
 )
 
 type remoteFile struct {
-	Path        string
-	CurrentHash string
+	Path         string
+	CurrentHash  string
 	PreviousHash string
-	Size        int64
-	Revision    int64
-	Deleted     bool
+	Size         int64
+	Revision     int64
+	Deleted      bool
 }
 
 type stagedUpload struct {
@@ -186,22 +186,26 @@ func (s *Store) PlanSync(ctx context.Context, req ManifestRequest) (SyncPlan, er
 		case !exists:
 			actions = append(actions, uploadAction(local))
 		case remote.Deleted:
-			if remote.Revision > req.LastKnownServerRevision {
+			if local.LastKnownRevision == remote.Revision {
+				actions = append(actions, uploadAction(local))
+			} else if remote.Revision > req.LastKnownServerRevision {
 				if local.Hash == remote.PreviousHash {
 					actions = append(actions, PlanAction{
-						Type:       PlanActionDeleteLocal,
-						Path:       path,
-						RemoteHash: remote.PreviousHash,
-						Revision:   remote.Revision,
+						Type:          PlanActionDeleteLocal,
+						Path:          path,
+						RemoteHash:    remote.PreviousHash,
+						Revision:      remote.Revision,
+						RemoteDeleted: true,
 					})
 				} else {
 					actions = append(actions, PlanAction{
-						Type:         PlanActionConflict,
-						Path:         path,
-						ExpectedHash: local.Hash,
-						RemoteHash:   remote.PreviousHash,
-						Size:         local.Size,
-						Revision:     remote.Revision,
+						Type:          PlanActionConflict,
+						Path:          path,
+						ExpectedHash:  local.Hash,
+						RemoteHash:    remote.PreviousHash,
+						Size:          local.Size,
+						Revision:      remote.Revision,
+						RemoteDeleted: true,
 					})
 				}
 			} else {
@@ -242,14 +246,14 @@ func (s *Store) PlanSync(ctx context.Context, req ManifestRequest) (SyncPlan, er
 		}
 	}
 
-	for path := range deletedPaths {
+	for path, deleted := range deletedPaths {
 		seen[path] = true
 		remote, exists := remoteFiles[path]
 		if !exists || remote.Deleted {
 			actions = append(actions, PlanAction{Type: PlanActionNone, Path: path})
 			continue
 		}
-		if remote.Revision > req.LastKnownServerRevision {
+		if remote.Revision > req.LastKnownServerRevision && deleted.LastKnownRevision != remote.Revision {
 			actions = append(actions, PlanAction{
 				Type:       PlanActionConflict,
 				Path:       path,
@@ -480,14 +484,18 @@ func (s *Store) DownloadFile(ctx context.Context, vaultPath string) (DownloadRes
 	return result, nil
 }
 
-func normalizeManifest(req ManifestRequest) (map[string]ManifestFile, map[string]bool, error) {
-	deletedPaths := make(map[string]bool, len(req.DeletedPaths))
+func normalizeManifest(req ManifestRequest) (map[string]ManifestFile, map[string]ManifestFile, error) {
+	deletedPaths := make(map[string]ManifestFile, len(req.DeletedPaths))
 	for _, rawPath := range req.DeletedPaths {
 		normalizedPath, err := NormalizeVaultPath(rawPath)
 		if err != nil {
 			return nil, nil, err
 		}
-		deletedPaths[normalizedPath] = true
+		deletedPaths[normalizedPath] = ManifestFile{
+			Path:              normalizedPath,
+			LastKnownRevision: req.LastKnownServerRevision,
+			Deleted:           true,
+		}
 	}
 
 	localFiles := make(map[string]ManifestFile, len(req.Files))
@@ -497,7 +505,8 @@ func normalizeManifest(req ManifestRequest) (map[string]ManifestFile, map[string
 			return nil, nil, err
 		}
 		if file.Deleted {
-			deletedPaths[normalizedPath] = true
+			file.Path = normalizedPath
+			deletedPaths[normalizedPath] = file
 			continue
 		}
 		if err := validateSHA256(file.Hash); err != nil {

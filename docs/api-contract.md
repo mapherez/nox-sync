@@ -212,6 +212,8 @@ Request:
 }
 ```
 
+Deleted files may also be sent in `files` with `"deleted": true` when the client needs to preserve the file's `lastKnownRevision` for safe conflict resolution. `deletedPaths` remains valid for simple delete reporting.
+
 Response:
 
 ```json
@@ -223,6 +225,14 @@ Response:
       "type": "upload",
       "path": "Notes/example.md",
       "expectedHash": "sha256..."
+    },
+    {
+      "type": "conflict",
+      "path": "Notes/deleted-remotely.md",
+      "expectedHash": "local-sha256...",
+      "remoteHash": "previous-remote-sha256...",
+      "revision": 12,
+      "remoteDeleted": true
     }
   ]
 }

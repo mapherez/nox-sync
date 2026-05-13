@@ -1,4 +1,4 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, requestUrl, setIcon } from "obsidian";
+import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, requestUrl, setIcon } from "obsidian";
 
 enum SyncButtonState {
   Unknown = "UNKNOWN",
@@ -25,6 +25,7 @@ interface NoxSyncSettings {
   knownFileRevisions: Record<string, number>;
   pendingDeletedPaths: string[];
   pendingConflicts: string[];
+  pendingConflictDetails: Record<string, PendingConflict>;
   syncHiddenFiles: boolean;
 }
 
@@ -50,7 +51,7 @@ interface LocalManifestFile {
   hash: string;
   size: number;
   lastKnownRevision: number;
-  deleted: false;
+  deleted: boolean;
 }
 
 interface BeginSyncResponse {
@@ -82,6 +83,7 @@ interface PlanAction {
   baseHash?: string;
   size?: number;
   revision?: number;
+  remoteDeleted?: boolean;
 }
 
 type PlanActionType = "upload" | "download" | "delete_remote" | "delete_local" | "conflict" | "none";
@@ -101,6 +103,27 @@ interface DownloadedFile {
   revision: number;
 }
 
+interface PendingConflict {
+  path: string;
+  localHash?: string;
+  remoteHash?: string;
+  baseHash?: string;
+  revision: number;
+  localDeleted: boolean;
+  remoteDeleted: boolean;
+}
+
+interface ConflictPreview {
+  detail: PendingConflict;
+  localText: string | null;
+  remoteText: string | null;
+  localHash: string;
+  remoteHash: string;
+  isMarkdown: boolean;
+}
+
+type ConflictResolutionChoice = "keep_local" | "keep_remote" | "keep_both" | "manual_merge";
+
 const NOX_SYNC_TRASH_ROOT = ".nox-sync-trash";
 
 const DEFAULT_SETTINGS: NoxSyncSettings = {
@@ -114,6 +137,7 @@ const DEFAULT_SETTINGS: NoxSyncSettings = {
   knownFileRevisions: {},
   pendingDeletedPaths: [],
   pendingConflicts: [],
+  pendingConflictDetails: {},
   syncHiddenFiles: false,
 };
 
@@ -186,7 +210,16 @@ export default class NoxSyncPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const loaded = ((await this.loadData()) ?? {}) as Partial<NoxSyncSettings>;
+    this.settings = {
+      ...DEFAULT_SETTINGS,
+      ...loaded,
+      knownFileHashes: { ...(loaded.knownFileHashes ?? {}) },
+      knownFileRevisions: { ...(loaded.knownFileRevisions ?? {}) },
+      pendingDeletedPaths: [...(loaded.pendingDeletedPaths ?? [])],
+      pendingConflicts: [...(loaded.pendingConflicts ?? [])],
+      pendingConflictDetails: { ...(loaded.pendingConflictDetails ?? {}) },
+    };
   }
 
   async saveSettings(): Promise<void> {
@@ -370,7 +403,7 @@ export default class NoxSyncPlugin extends Plugin {
         return;
 
       case SyncButtonState.Conflict:
-        new Notice("NoX Sync conflicts need to be resolved.");
+        this.openConflictResolver();
         return;
 
       case SyncButtonState.Unknown:
@@ -703,6 +736,249 @@ export default class NoxSyncPlugin extends Plugin {
     new Notice(message);
   }
 
+  private openConflictResolver(): void {
+    if (this.settings.pendingConflicts.length === 0) {
+      new Notice("NoX Sync has no stored conflicts to resolve.");
+      void this.refreshLocalAndBackendStatus();
+      return;
+    }
+
+    new ConflictResolutionModal(this.app, this).open();
+  }
+
+  async getConflictPreview(path: string): Promise<ConflictPreview> {
+    const normalizedPath = normalizeRequiredPath(path);
+    const detail = this.pendingConflictDetail(normalizedPath);
+    const isMarkdown = isMarkdownPath(normalizedPath);
+
+    let localHash = "";
+    let localText: string | null = null;
+    const localFile = this.getVaultFile(normalizedPath);
+    if (localFile) {
+      const localContent = await this.app.vault.readBinary(localFile);
+      localHash = await sha256Hex(localContent);
+      if (isMarkdown) {
+        localText = textFromArrayBuffer(localContent);
+      }
+    }
+
+    let remoteHash = detail.remoteHash ?? "";
+    let remoteText: string | null = null;
+    if (!detail.remoteDeleted) {
+      const downloaded = await this.downloadConflictRemote(detail);
+      remoteHash = downloaded.hash;
+      if (!detail.remoteHash || detail.revision === 0) {
+        detail.remoteHash = downloaded.hash;
+        detail.revision = downloaded.revision || detail.revision;
+        this.settings.pendingConflictDetails[normalizedPath] = detail;
+        await this.saveSettings();
+      }
+      if (isMarkdown) {
+        remoteText = textFromArrayBuffer(downloaded.content);
+      }
+    }
+
+    return {
+      detail,
+      localText,
+      remoteText,
+      localHash,
+      remoteHash,
+      isMarkdown,
+    };
+  }
+
+  async resolvePendingConflict(
+    path: string,
+    choice: ConflictResolutionChoice,
+    mergedText = "",
+  ): Promise<string> {
+    const normalizedPath = normalizeRequiredPath(path);
+    const detail = this.pendingConflictDetail(normalizedPath);
+
+    switch (choice) {
+      case "keep_local":
+        await this.resolveByKeepingLocal(normalizedPath, detail);
+        break;
+      case "keep_remote":
+        await this.resolveByKeepingRemote(normalizedPath, detail);
+        break;
+      case "keep_both":
+        await this.resolveByKeepingBoth(normalizedPath, detail);
+        break;
+      case "manual_merge":
+        await this.resolveByManualMerge(normalizedPath, detail, mergedText);
+        break;
+    }
+
+    await this.clearResolvedConflict(normalizedPath);
+    await this.refreshLocalManifestState();
+
+    if (this.settings.pendingConflicts.length === 0) {
+      return "Conflict resolved. Click sync to commit the resolved vault state.";
+    }
+    return "Conflict resolved.";
+  }
+
+  private pendingConflictDetail(path: string): PendingConflict {
+    const detail = this.settings.pendingConflictDetails[path];
+    if (detail) {
+      return {
+        ...detail,
+        path,
+        revision: detail.revision ?? 0,
+        localDeleted: detail.localDeleted ?? false,
+        remoteDeleted: detail.remoteDeleted ?? false,
+      };
+    }
+
+    return {
+      path,
+      revision: this.settings.knownFileRevisions[path] ?? 0,
+      localDeleted: this.getVaultFile(path) === null,
+      remoteDeleted: false,
+    };
+  }
+
+  private async resolveByKeepingLocal(path: string, detail: PendingConflict): Promise<void> {
+    const localFile = this.getVaultFile(path);
+
+    if (!localFile) {
+      this.settings.pendingDeletedPaths = [...new Set([...this.settings.pendingDeletedPaths, path])].sort();
+      this.settings.knownFileHashes[path] = detail.remoteHash ?? this.settings.knownFileHashes[path] ?? "";
+      this.settings.knownFileRevisions[path] = detail.revision;
+      this.localDirty = true;
+      await this.saveSettings();
+      return;
+    }
+
+    const localHash = await this.hashVaultFile(localFile);
+    this.settings.knownFileHashes[path] = detail.remoteHash ?? this.settings.knownFileHashes[path] ?? localHash;
+    this.settings.knownFileRevisions[path] = detail.revision;
+    this.settings.pendingDeletedPaths = this.settings.pendingDeletedPaths.filter((deletedPath) => deletedPath !== path);
+    this.localDirty = true;
+    await this.saveSettings();
+  }
+
+  private async resolveByKeepingRemote(path: string, detail: PendingConflict): Promise<void> {
+    if (detail.remoteDeleted) {
+      const localFile = this.getVaultFile(path);
+      if (localFile) {
+        await this.moveFileToSyncTrash(localFile);
+      }
+      delete this.settings.knownFileHashes[path];
+      delete this.settings.knownFileRevisions[path];
+      this.settings.pendingDeletedPaths = this.settings.pendingDeletedPaths.filter((deletedPath) => deletedPath !== path);
+      await this.saveSettings();
+      return;
+    }
+
+    const downloaded = await this.downloadConflictRemote(detail);
+    await this.replaceVaultFileWithContent(path, downloaded.content);
+    this.settings.knownFileHashes[path] = downloaded.hash;
+    this.settings.knownFileRevisions[path] = downloaded.revision || detail.revision;
+    this.settings.pendingDeletedPaths = this.settings.pendingDeletedPaths.filter((deletedPath) => deletedPath !== path);
+    await this.saveSettings();
+  }
+
+  private async resolveByKeepingBoth(path: string, detail: PendingConflict): Promise<void> {
+    const localFile = this.getVaultFile(path);
+    if (localFile) {
+      await this.moveFileToConflictCopy(localFile);
+    }
+
+    if (detail.remoteDeleted) {
+      delete this.settings.knownFileHashes[path];
+      delete this.settings.knownFileRevisions[path];
+      this.settings.pendingDeletedPaths = this.settings.pendingDeletedPaths.filter((deletedPath) => deletedPath !== path);
+      this.localDirty = true;
+      await this.saveSettings();
+      return;
+    }
+
+    const downloaded = await this.downloadConflictRemote(detail);
+    await this.ensureParentFolders(path);
+    if (this.app.vault.getAbstractFileByPath(path) !== null) {
+      throw new Error(`Cannot restore remote file because ${path} still exists.`);
+    }
+    await this.app.vault.createBinary(path, downloaded.content);
+    this.settings.knownFileHashes[path] = downloaded.hash;
+    this.settings.knownFileRevisions[path] = downloaded.revision || detail.revision;
+    this.settings.pendingDeletedPaths = this.settings.pendingDeletedPaths.filter((deletedPath) => deletedPath !== path);
+    this.localDirty = true;
+    await this.saveSettings();
+  }
+
+  private async resolveByManualMerge(path: string, detail: PendingConflict, mergedText: string): Promise<void> {
+    if (detail.remoteDeleted || !isMarkdownPath(path)) {
+      throw new Error("Manual merge is only available when both sides have Markdown content.");
+    }
+    if (mergedText.trim() === "") {
+      throw new Error("Manual merge content cannot be empty.");
+    }
+
+    const content = arrayBufferFromText(mergedText);
+    await this.replaceVaultFileWithContent(path, content);
+    this.settings.knownFileHashes[path] = detail.remoteHash ?? this.settings.knownFileHashes[path] ?? "";
+    this.settings.knownFileRevisions[path] = detail.revision;
+    this.settings.pendingDeletedPaths = this.settings.pendingDeletedPaths.filter((deletedPath) => deletedPath !== path);
+    this.localDirty = true;
+    await this.saveSettings();
+  }
+
+  private async downloadConflictRemote(detail: PendingConflict): Promise<DownloadedFile> {
+    if (detail.remoteDeleted) {
+      throw new Error("The remote side of this conflict is deleted.");
+    }
+
+    return this.downloadRemoteFile({
+      type: "download",
+      path: detail.path,
+      remoteHash: detail.remoteHash,
+      revision: detail.revision,
+    });
+  }
+
+  private async replaceVaultFileWithContent(path: string, content: ArrayBuffer): Promise<void> {
+    const existing = this.getVaultFile(path);
+    await this.ensureParentFolders(path);
+    if (existing) {
+      await this.moveFileToSyncTrash(existing);
+    }
+
+    await this.app.vault.createBinary(path, content);
+    const written = this.getVaultFile(path);
+    if (!written) {
+      throw new Error(`Resolved file was not written: ${path}.`);
+    }
+  }
+
+  private async moveFileToConflictCopy(file: TFile): Promise<string> {
+    const conflictPath = this.nextConflictCopyPath(file.path);
+    await this.ensureParentFolders(conflictPath);
+    await this.app.vault.rename(file, conflictPath);
+    return conflictPath;
+  }
+
+  private nextConflictCopyPath(path: string): string {
+    const clientName = slugForConflictName(this.settings.clientName || "client");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const basePath = appendPathSuffix(path, `.sync-conflict.${clientName}.${timestamp}`);
+    let candidate = basePath;
+
+    while (this.app.vault.getAbstractFileByPath(candidate) !== null) {
+      candidate = appendPathSuffix(basePath, `-${randomId().slice(0, 8)}`);
+    }
+
+    return candidate;
+  }
+
+  private async clearResolvedConflict(path: string): Promise<void> {
+    this.settings.pendingConflicts = this.settings.pendingConflicts.filter((conflictPath) => conflictPath !== path);
+    delete this.settings.pendingConflictDetails[path];
+    await this.saveSettings();
+  }
+
   private async applyCommittedSyncState(
     manifest: LocalManifest,
     plan: SyncPlanResponse,
@@ -722,7 +998,7 @@ export default class NoxSyncPlugin extends Plugin {
 
       switch (action.type) {
         case "upload":
-          if (!manifestFile) {
+          if (!manifestFile || manifestFile.deleted) {
             throw new Error(`Upload action did not match a local manifest file for ${path}.`);
           }
           knownFileHashes[path] = action.expectedHash ?? manifestFile.hash;
@@ -741,7 +1017,7 @@ export default class NoxSyncPlugin extends Plugin {
           delete knownFileRevisions[path];
           break;
         case "none":
-          if (manifestFile) {
+          if (manifestFile && !manifestFile.deleted) {
             knownFileHashes[path] = manifestFile.hash;
             knownFileRevisions[path] = action.revision ?? manifestFile.lastKnownRevision;
           } else {
@@ -765,11 +1041,22 @@ export default class NoxSyncPlugin extends Plugin {
 
   private async persistPendingConflicts(actions: PlanAction[]): Promise<void> {
     const paths = [...new Set(actions.map((action) => this.normalizedActionPath(action)))].sort();
-    if (arraysEqual(this.settings.pendingConflicts, paths)) {
-      return;
+    const details = { ...this.settings.pendingConflictDetails };
+    for (const action of actions) {
+      const path = this.normalizedActionPath(action);
+      details[path] = {
+        path,
+        localHash: action.expectedHash,
+        remoteHash: action.remoteHash,
+        baseHash: action.baseHash,
+        revision: action.revision ?? 0,
+        localDeleted: action.expectedHash === undefined || action.expectedHash === "",
+        remoteDeleted: action.remoteDeleted ?? false,
+      };
     }
 
     this.settings.pendingConflicts = paths;
+    this.settings.pendingConflictDetails = details;
     await this.saveSettings();
   }
 
@@ -794,6 +1081,10 @@ export default class NoxSyncPlugin extends Plugin {
   }
 
   private async readManifestFileContent(file: LocalManifestFile): Promise<ArrayBuffer> {
+    if (file.deleted) {
+      throw new Error(`Cannot read deleted manifest file: ${file.path}.`);
+    }
+
     const vaultFile = this.getVaultFile(file.path);
     if (!vaultFile) {
       throw new Error(`Local file disappeared during sync: ${file.path}.`);
@@ -817,6 +1108,13 @@ export default class NoxSyncPlugin extends Plugin {
     }
 
     if (!manifestFile) {
+      if (current) {
+        throw new Error(`Local file appeared during sync: ${path}.`);
+      }
+      return null;
+    }
+
+    if (manifestFile.deleted) {
       if (current) {
         throw new Error(`Local file appeared during sync: ${path}.`);
       }
@@ -985,6 +1283,16 @@ export default class NoxSyncPlugin extends Plugin {
       .filter((path): path is string => path !== null && !this.shouldExcludePath(path) && !seenPaths.has(path))
       .sort();
 
+    for (const path of deletedPaths) {
+      files.push({
+        path,
+        hash: this.settings.knownFileHashes[path] ?? "",
+        size: 0,
+        lastKnownRevision: this.settings.knownFileRevisions[path] ?? 0,
+        deleted: true,
+      });
+    }
+
     files.sort((a, b) => a.path.localeCompare(b.path));
 
     return {
@@ -1150,6 +1458,156 @@ export default class NoxSyncPlugin extends Plugin {
     return {
       Authorization: `Bearer ${this.settings.apiKey.trim()}`,
     };
+  }
+}
+
+class ConflictResolutionModal extends Modal {
+  private selectedPath: string | null = null;
+
+  constructor(
+    app: App,
+    private readonly plugin: NoxSyncPlugin,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.selectedPath = this.plugin.settings.pendingConflicts[0] ?? null;
+    this.render();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private render(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("nox-sync-conflict-modal");
+
+    contentEl.createEl("h2", { text: "NoX Sync Conflicts" });
+
+    const conflicts = this.plugin.settings.pendingConflicts;
+    if (conflicts.length === 0) {
+      contentEl.createEl("p", { text: "No conflicts are pending." });
+      return;
+    }
+
+    if (!this.selectedPath || !conflicts.includes(this.selectedPath)) {
+      this.selectedPath = conflicts[0];
+    }
+
+    const layout = contentEl.createEl("div", { cls: "nox-sync-conflict-layout" });
+    const list = layout.createEl("div", { cls: "nox-sync-conflict-list" });
+    const detail = layout.createEl("div", { cls: "nox-sync-conflict-detail" });
+
+    for (const path of conflicts) {
+      const item = list.createEl("button", {
+        text: path,
+        cls: path === this.selectedPath ? "nox-sync-conflict-list-item is-active" : "nox-sync-conflict-list-item",
+      });
+      item.type = "button";
+      item.onclick = () => {
+        this.selectedPath = path;
+        this.render();
+      };
+    }
+
+    void this.renderDetail(detail, this.selectedPath);
+  }
+
+  private async renderDetail(container: HTMLElement, path: string): Promise<void> {
+    container.empty();
+    container.createEl("p", { text: "Loading conflict details..." });
+
+    try {
+      const preview = await this.plugin.getConflictPreview(path);
+      if (this.selectedPath !== path) {
+        return;
+      }
+
+      container.empty();
+      container.createEl("h3", { text: path });
+
+      const meta = container.createEl("div", { cls: "nox-sync-conflict-meta" });
+      meta.createEl("span", {
+        text: preview.detail.localDeleted ? "Local: deleted" : `Local: ${shortHash(preview.localHash)}`,
+      });
+      meta.createEl("span", {
+        text: preview.detail.remoteDeleted ? "Remote: deleted" : `Remote: ${shortHash(preview.remoteHash)}`,
+      });
+
+      let mergeInput: HTMLTextAreaElement | null = null;
+      if (preview.isMarkdown) {
+        const columns = container.createEl("div", { cls: "nox-sync-conflict-columns" });
+        this.renderReadonlyText(columns, "Local version", preview.localText ?? "(deleted)");
+        this.renderReadonlyText(columns, "Remote version", preview.remoteText ?? "(deleted)");
+
+        if (!preview.detail.localDeleted && !preview.detail.remoteDeleted) {
+          const mergeWrap = container.createEl("div", { cls: "nox-sync-conflict-merge" });
+          mergeWrap.createEl("h4", { text: "Manual merge" });
+          mergeInput = mergeWrap.createEl("textarea", { cls: "nox-sync-conflict-textarea" });
+          mergeInput.value = preview.localText ?? "";
+        }
+      } else {
+        container.createEl("p", {
+          text: "This is a binary or non-Markdown conflict. No text merge is available.",
+          cls: "nox-sync-conflict-note",
+        });
+      }
+
+      const actions = container.createEl("div", { cls: "nox-sync-conflict-actions" });
+      this.renderActionButton(actions, "Keep local", path, "keep_local");
+      this.renderActionButton(actions, "Keep remote", path, "keep_remote");
+      this.renderActionButton(actions, "Keep both", path, "keep_both");
+      if (mergeInput) {
+        this.renderActionButton(actions, "Save manual merge", path, "manual_merge", () => mergeInput?.value ?? "");
+      }
+    } catch (error) {
+      container.empty();
+      const message = error instanceof Error ? error.message : "Failed to load conflict details.";
+      container.createEl("p", { text: message, cls: "nox-sync-conflict-error" });
+    }
+  }
+
+  private renderReadonlyText(container: HTMLElement, label: string, value: string): void {
+    const wrap = container.createEl("div", { cls: "nox-sync-conflict-version" });
+    wrap.createEl("h4", { text: label });
+    const textarea = wrap.createEl("textarea", { cls: "nox-sync-conflict-textarea" });
+    textarea.readOnly = true;
+    textarea.value = value;
+  }
+
+  private renderActionButton(
+    container: HTMLElement,
+    label: string,
+    path: string,
+    choice: ConflictResolutionChoice,
+    value?: () => string,
+  ): void {
+    const button = container.createEl("button", { text: label });
+    button.type = "button";
+    button.onclick = () => {
+      void this.resolve(path, choice, value?.() ?? "");
+    };
+  }
+
+  private async resolve(path: string, choice: ConflictResolutionChoice, mergedText: string): Promise<void> {
+    try {
+      const message = await this.plugin.resolvePendingConflict(path, choice, mergedText);
+      new Notice(`NoX Sync: ${message}`);
+
+      if (this.plugin.settings.pendingConflicts.length === 0) {
+        this.close();
+        return;
+      }
+
+      this.selectedPath = this.plugin.settings.pendingConflicts[0];
+      this.render();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Conflict resolution failed.";
+      new Notice(`NoX Sync: ${message}`);
+    }
   }
 }
 
@@ -1346,6 +1804,19 @@ function normalizeVaultPath(rawPath: string): string | null {
   return parts.length > 0 ? parts.join("/") : null;
 }
 
+function normalizeRequiredPath(rawPath: string): string {
+  const path = normalizeVaultPath(rawPath);
+  if (!path) {
+    throw new Error("Invalid conflict path.");
+  }
+  return path;
+}
+
+function isMarkdownPath(path: string): boolean {
+  const lowerPath = path.toLowerCase();
+  return lowerPath.endsWith(".md") || lowerPath.endsWith(".markdown");
+}
+
 function isPluginInternalPath(path: string): boolean {
   return path === ".obsidian/plugins/nox-sync" || path.startsWith(".obsidian/plugins/nox-sync/");
 }
@@ -1361,6 +1832,27 @@ function isHiddenPath(path: string): boolean {
 async function sha256Hex(content: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", content);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function textFromArrayBuffer(content: ArrayBuffer): string {
+  return new TextDecoder("utf-8").decode(content);
+}
+
+function arrayBufferFromText(value: string): ArrayBuffer {
+  const bytes = new TextEncoder().encode(value);
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+function slugForConflictName(value: string): string {
+  const slug = value
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "client";
+}
+
+function shortHash(value: string): string {
+  return value ? value.slice(0, 12) : "unknown";
 }
 
 function ensureResponseOK(response: { status: number; json: unknown }): void {

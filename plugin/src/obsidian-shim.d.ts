@@ -49,6 +49,16 @@ declare module "obsidian" {
     display(): void;
   }
 
+  export class Modal {
+    app: App;
+    contentEl: HTMLElement;
+    constructor(app: App);
+    open(): void;
+    close(): void;
+    onOpen(): void;
+    onClose(): void;
+  }
+
   export class Setting {
     constructor(containerEl: HTMLElement);
     setName(name: string): this;

@@ -308,6 +308,137 @@ func TestPlanSyncRemoteDeleteConflictsWhenLocalChanged(t *testing.T) {
 	}
 }
 
+func TestPlanSyncUploadsAfterExplicitRemoteDeleteResolution(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	baseContent := []byte("base")
+	baseHash := sha256Hex(baseContent)
+
+	first := beginSyncForTest(t, store, "client_a")
+	if _, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID: first.SessionID,
+		ClientID:  "client_a",
+		VaultID:   "vault_test",
+		Files: []ManifestFile{{
+			Path: "note.md",
+			Hash: baseHash,
+			Size: int64(len(baseContent)),
+		}},
+	}); err != nil {
+		t.Fatalf("plan first sync: %v", err)
+	}
+	if err := store.StageUpload(ctx, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
+		t.Fatalf("stage first upload: %v", err)
+	}
+	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
+		t.Fatalf("commit first sync: %v", err)
+	}
+
+	second := beginSyncForTest(t, store, "client_b")
+	if _, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID:               second.SessionID,
+		ClientID:                "client_b",
+		VaultID:                 "vault_test",
+		LastKnownServerRevision: 1,
+		DeletedPaths:            []string{"note.md"},
+	}); err != nil {
+		t.Fatalf("plan delete sync: %v", err)
+	}
+	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
+		t.Fatalf("commit delete sync: %v", err)
+	}
+
+	third := beginSyncForTest(t, store, "client_a")
+	plan, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID:               third.SessionID,
+		ClientID:                "client_a",
+		VaultID:                 "vault_test",
+		LastKnownServerRevision: 1,
+		Files: []ManifestFile{{
+			Path:              "note.md",
+			Hash:              baseHash,
+			Size:              int64(len(baseContent)),
+			LastKnownRevision: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("plan resolved upload sync: %v", err)
+	}
+	if len(plan.Actions) != 1 || plan.Actions[0].Type != PlanActionUpload {
+		t.Fatalf("expected upload action, got %#v", plan.Actions)
+	}
+}
+
+func TestPlanSyncDeletesRemoteAfterExplicitLocalDeleteResolution(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	baseContent := []byte("base")
+	baseHash := sha256Hex(baseContent)
+	remoteContent := []byte("remote")
+	remoteHash := sha256Hex(remoteContent)
+
+	first := beginSyncForTest(t, store, "client_a")
+	if _, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID: first.SessionID,
+		ClientID:  "client_a",
+		VaultID:   "vault_test",
+		Files: []ManifestFile{{
+			Path: "note.md",
+			Hash: baseHash,
+			Size: int64(len(baseContent)),
+		}},
+	}); err != nil {
+		t.Fatalf("plan first sync: %v", err)
+	}
+	if err := store.StageUpload(ctx, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
+		t.Fatalf("stage first upload: %v", err)
+	}
+	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
+		t.Fatalf("commit first sync: %v", err)
+	}
+
+	second := beginSyncForTest(t, store, "client_b")
+	if _, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID:               second.SessionID,
+		ClientID:                "client_b",
+		VaultID:                 "vault_test",
+		LastKnownServerRevision: 1,
+		Files: []ManifestFile{{
+			Path:              "note.md",
+			Hash:              remoteHash,
+			Size:              int64(len(remoteContent)),
+			LastKnownRevision: 1,
+		}},
+	}); err != nil {
+		t.Fatalf("plan remote update sync: %v", err)
+	}
+	if err := store.StageUpload(ctx, second.SessionID, "client_b", "note.md", remoteHash, int64(len(remoteContent)), bytes.NewReader(remoteContent)); err != nil {
+		t.Fatalf("stage remote update: %v", err)
+	}
+	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
+		t.Fatalf("commit remote update: %v", err)
+	}
+
+	third := beginSyncForTest(t, store, "client_a")
+	plan, err := store.PlanSync(ctx, ManifestRequest{
+		SessionID:               third.SessionID,
+		ClientID:                "client_a",
+		VaultID:                 "vault_test",
+		LastKnownServerRevision: 1,
+		Files: []ManifestFile{{
+			Path:              "note.md",
+			LastKnownRevision: 2,
+			Deleted:           true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("plan resolved delete sync: %v", err)
+	}
+	if len(plan.Actions) != 1 || plan.Actions[0].Type != PlanActionDeleteRemote {
+		t.Fatalf("expected delete_remote action, got %#v", plan.Actions)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 

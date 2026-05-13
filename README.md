@@ -11,7 +11,7 @@ The product rules and implementation milestones live in `SPECS/`.
 
 ## Current State
 
-This repository is at Milestone 5:
+This repository is at Milestone 6:
 
 - backend skeleton
 - plugin skeleton
@@ -44,11 +44,17 @@ This repository is at Milestone 5:
 - safe local replacement/delete handling through an excluded `.nox-sync-trash/` folder
 - plugin sync state updates only after successful backend commit
 - backend planner handling for remote-only edits and remote deletes against unchanged local files
+- conflict details persisted in plugin-local state when the backend returns conflict actions
+- conflict resolver modal opened from the `CONFLICT` ribbon state
+- Markdown conflict comparison with keep local, keep remote, keep both, and manual merge choices
+- binary/non-Markdown conflict handling with keep local, keep remote, and keep both choices
+- syncable conflict copy naming using `filename.sync-conflict.<client-name>.<date>.ext`
+- explicit resolved delete/upload planner paths so user conflict choices do not loop back into conflict
 - Docker scaffolding
 - fixture vaults
 - naming conventions
 
-The first non-conflicting plugin sync path is implemented. Later milestones add user-facing conflict resolution and failure-recovery hardening.
+The first non-conflicting plugin sync path and initial user-facing conflict resolution are implemented. Later milestones add failure-recovery hardening and release readiness.
 
 ## Development
 

@@ -72,3 +72,107 @@
   color: var(--nox-sync-warning);
   opacity: 0.65;
 }
+
+.nox-sync-conflict-modal {
+  min-width: min(920px, 92vw);
+}
+
+.nox-sync-conflict-layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+}
+
+.nox-sync-conflict-list {
+  border-right: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 62vh;
+  overflow: auto;
+  padding-right: 12px;
+}
+
+.nox-sync-conflict-list-item {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  color: var(--text-normal);
+  cursor: pointer;
+  font: inherit;
+  overflow-wrap: anywhere;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.nox-sync-conflict-list-item.is-active {
+  border-color: var(--interactive-accent);
+}
+
+.nox-sync-conflict-detail {
+  min-width: 0;
+}
+
+.nox-sync-conflict-meta,
+.nox-sync-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.nox-sync-conflict-meta span {
+  background: var(--background-secondary);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 0.85em;
+  padding: 4px 8px;
+}
+
+.nox-sync-conflict-columns {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.nox-sync-conflict-version,
+.nox-sync-conflict-merge {
+  min-width: 0;
+}
+
+.nox-sync-conflict-textarea {
+  font-family: var(--font-monospace);
+  min-height: 180px;
+  resize: vertical;
+  width: 100%;
+}
+
+.nox-sync-conflict-merge .nox-sync-conflict-textarea {
+  min-height: 220px;
+}
+
+.nox-sync-conflict-actions button {
+  cursor: pointer;
+}
+
+.nox-sync-conflict-note {
+  color: var(--text-muted);
+}
+
+.nox-sync-conflict-error {
+  color: var(--text-error);
+}
+
+@media (max-width: 720px) {
+  .nox-sync-conflict-layout,
+  .nox-sync-conflict-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .nox-sync-conflict-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    max-height: 180px;
+    padding: 0 0 12px;
+  }
+}
