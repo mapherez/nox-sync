@@ -11,11 +11,16 @@ import (
 	"time"
 )
 
+const (
+	testUserID  = "user_test"
+	testVaultID = "vault_test"
+)
+
 func TestBeginSyncRejectsSecondActiveSession(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	if _, err := store.BeginSync(ctx, BeginSyncRequest{
+	if _, err := store.BeginSync(ctx, testUserID, BeginSyncRequest{
 		ClientID:   "client_a",
 		ClientName: "A",
 		VaultID:    "vault_test",
@@ -23,7 +28,7 @@ func TestBeginSyncRejectsSecondActiveSession(t *testing.T) {
 		t.Fatalf("begin first sync: %v", err)
 	}
 
-	_, err := store.BeginSync(ctx, BeginSyncRequest{
+	_, err := store.BeginSync(ctx, testUserID, BeginSyncRequest{
 		ClientID:   "client_b",
 		ClientName: "B",
 		VaultID:    "vault_test",
@@ -33,13 +38,64 @@ func TestBeginSyncRejectsSecondActiveSession(t *testing.T) {
 	}
 }
 
+func TestDifferentVaultsCanSyncConcurrently(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	secondVault, err := store.CreateVault(ctx, testUserID, "Second Vault")
+	if err != nil {
+		t.Fatalf("create second vault: %v", err)
+	}
+
+	if _, err := store.BeginSync(ctx, testUserID, BeginSyncRequest{
+		ClientID:   "client_a",
+		ClientName: "A",
+		VaultID:    testVaultID,
+	}); err != nil {
+		t.Fatalf("begin first vault sync: %v", err)
+	}
+
+	if _, err := store.BeginSync(ctx, testUserID, BeginSyncRequest{
+		ClientID:   "client_b",
+		ClientName: "B",
+		VaultID:    secondVault.ID,
+	}); err != nil {
+		t.Fatalf("begin second vault sync: %v", err)
+	}
+}
+
+func TestUserCannotSyncAnotherUsersVault(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	otherUser, err := store.UpsertAllowedUser(ctx, "other@example.com", UserRoleUser)
+	if err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+	otherVault, err := store.CreateVault(ctx, otherUser.ID, "Other Vault")
+	if err != nil {
+		t.Fatalf("create other vault: %v", err)
+	}
+
+	_, err = store.BeginSync(ctx, testUserID, BeginSyncRequest{
+		ClientID:   "client_a",
+		ClientName: "A",
+		VaultID:    otherVault.ID,
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for another user's vault, got %v", err)
+	}
+
+	if _, err := store.DownloadFile(ctx, testUserID, otherVault.ID, "note.md"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for another user's download, got %v", err)
+	}
+}
+
 func TestFirstUploadCommitCreatesDownloadableBlob(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	content := []byte("# Hello\n")
 	hash := sha256Hex(content)
 
-	begin, err := store.BeginSync(ctx, BeginSyncRequest{
+	begin, err := store.BeginSync(ctx, testUserID, BeginSyncRequest{
 		ClientID:   "client_a",
 		ClientName: "A",
 		VaultID:    "vault_test",
@@ -48,7 +104,7 @@ func TestFirstUploadCommitCreatesDownloadableBlob(t *testing.T) {
 		t.Fatalf("begin sync: %v", err)
 	}
 
-	plan, err := store.PlanSync(ctx, ManifestRequest{
+	plan, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID: begin.SessionID,
 		ClientID:  "client_a",
 		VaultID:   "vault_test",
@@ -65,11 +121,11 @@ func TestFirstUploadCommitCreatesDownloadableBlob(t *testing.T) {
 		t.Fatalf("expected one upload action, got %#v", plan.Actions)
 	}
 
-	if err := store.StageUpload(ctx, begin.SessionID, "client_a", "Notes/Hello.md", hash, int64(len(content)), bytes.NewReader(content)); err != nil {
+	if err := store.StageUpload(ctx, testUserID, begin.SessionID, "client_a", "Notes/Hello.md", hash, int64(len(content)), bytes.NewReader(content)); err != nil {
 		t.Fatalf("stage upload: %v", err)
 	}
 
-	commit, err := store.CommitSync(ctx, CommitRequest{
+	commit, err := store.CommitSync(ctx, testUserID, CommitRequest{
 		SessionID: begin.SessionID,
 		ClientID:  "client_a",
 	})
@@ -80,7 +136,7 @@ func TestFirstUploadCommitCreatesDownloadableBlob(t *testing.T) {
 		t.Fatalf("expected server revision 1, got %d", commit.ServerRevision)
 	}
 
-	download, err := store.DownloadFile(ctx, "Notes/Hello.md")
+	download, err := store.DownloadFile(ctx, testUserID, testVaultID, "Notes/Hello.md")
 	if err != nil {
 		t.Fatalf("download metadata: %v", err)
 	}
@@ -98,7 +154,7 @@ func TestStageUploadRejectsHashMismatch(t *testing.T) {
 	content := []byte("correct")
 	expectedHash := sha256Hex(content)
 
-	begin, err := store.BeginSync(ctx, BeginSyncRequest{
+	begin, err := store.BeginSync(ctx, testUserID, BeginSyncRequest{
 		ClientID:   "client_a",
 		ClientName: "A",
 		VaultID:    "vault_test",
@@ -107,7 +163,7 @@ func TestStageUploadRejectsHashMismatch(t *testing.T) {
 		t.Fatalf("begin sync: %v", err)
 	}
 
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID: begin.SessionID,
 		ClientID:  "client_a",
 		VaultID:   "vault_test",
@@ -120,7 +176,7 @@ func TestStageUploadRejectsHashMismatch(t *testing.T) {
 		t.Fatalf("plan sync: %v", err)
 	}
 
-	err = store.StageUpload(ctx, begin.SessionID, "client_a", "note.md", expectedHash, int64(len(content)), bytes.NewReader([]byte("wrong!!")))
+	err = store.StageUpload(ctx, testUserID, begin.SessionID, "client_a", "note.md", expectedHash, int64(len(content)), bytes.NewReader([]byte("wrong!!")))
 	if !errors.Is(err, ErrHashMismatch) {
 		t.Fatalf("expected ErrHashMismatch, got %v", err)
 	}
@@ -133,7 +189,7 @@ func TestPlanSyncReportsConflictForDivergedFile(t *testing.T) {
 	baseHash := sha256Hex(baseContent)
 
 	first := beginSyncForTest(t, store, "client_a")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID: first.SessionID,
 		ClientID:  "client_a",
 		VaultID:   "vault_test",
@@ -145,17 +201,17 @@ func TestPlanSyncReportsConflictForDivergedFile(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("plan first sync: %v", err)
 	}
-	if err := store.StageUpload(ctx, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
+	if err := store.StageUpload(ctx, testUserID, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
 		t.Fatalf("stage first upload: %v", err)
 	}
-	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
+	if _, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
 		t.Fatalf("commit first sync: %v", err)
 	}
 
 	localContent := []byte("local")
 	localHash := sha256Hex(localContent)
 	second := beginSyncForTest(t, store, "client_b")
-	plan, err := store.PlanSync(ctx, ManifestRequest{
+	plan, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               second.SessionID,
 		ClientID:                "client_b",
 		VaultID:                 "vault_test",
@@ -184,7 +240,7 @@ func TestPlanSyncDownloadsRemoteOnlyChangeForUnchangedLocalFile(t *testing.T) {
 	remoteHash := sha256Hex(remoteContent)
 
 	first := beginSyncForTest(t, store, "client_a")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID: first.SessionID,
 		ClientID:  "client_a",
 		VaultID:   "vault_test",
@@ -196,15 +252,15 @@ func TestPlanSyncDownloadsRemoteOnlyChangeForUnchangedLocalFile(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("plan first sync: %v", err)
 	}
-	if err := store.StageUpload(ctx, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
+	if err := store.StageUpload(ctx, testUserID, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
 		t.Fatalf("stage first upload: %v", err)
 	}
-	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
+	if _, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
 		t.Fatalf("commit first sync: %v", err)
 	}
 
 	second := beginSyncForTest(t, store, "client_b")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               second.SessionID,
 		ClientID:                "client_b",
 		VaultID:                 "vault_test",
@@ -218,15 +274,15 @@ func TestPlanSyncDownloadsRemoteOnlyChangeForUnchangedLocalFile(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("plan second sync: %v", err)
 	}
-	if err := store.StageUpload(ctx, second.SessionID, "client_b", "note.md", remoteHash, int64(len(remoteContent)), bytes.NewReader(remoteContent)); err != nil {
+	if err := store.StageUpload(ctx, testUserID, second.SessionID, "client_b", "note.md", remoteHash, int64(len(remoteContent)), bytes.NewReader(remoteContent)); err != nil {
 		t.Fatalf("stage second upload: %v", err)
 	}
-	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
+	if _, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
 		t.Fatalf("commit second sync: %v", err)
 	}
 
 	third := beginSyncForTest(t, store, "client_a")
-	plan, err := store.PlanSync(ctx, ManifestRequest{
+	plan, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               third.SessionID,
 		ClientID:                "client_a",
 		VaultID:                 "vault_test",
@@ -255,7 +311,7 @@ func TestPlanSyncRemoteDeleteConflictsWhenLocalChanged(t *testing.T) {
 	localHash := sha256Hex(localContent)
 
 	first := beginSyncForTest(t, store, "client_a")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID: first.SessionID,
 		ClientID:  "client_a",
 		VaultID:   "vault_test",
@@ -267,15 +323,15 @@ func TestPlanSyncRemoteDeleteConflictsWhenLocalChanged(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("plan first sync: %v", err)
 	}
-	if err := store.StageUpload(ctx, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
+	if err := store.StageUpload(ctx, testUserID, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
 		t.Fatalf("stage first upload: %v", err)
 	}
-	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
+	if _, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
 		t.Fatalf("commit first sync: %v", err)
 	}
 
 	second := beginSyncForTest(t, store, "client_b")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               second.SessionID,
 		ClientID:                "client_b",
 		VaultID:                 "vault_test",
@@ -284,12 +340,12 @@ func TestPlanSyncRemoteDeleteConflictsWhenLocalChanged(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("plan second sync: %v", err)
 	}
-	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
+	if _, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
 		t.Fatalf("commit second sync: %v", err)
 	}
 
 	third := beginSyncForTest(t, store, "client_a")
-	plan, err := store.PlanSync(ctx, ManifestRequest{
+	plan, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               third.SessionID,
 		ClientID:                "client_a",
 		VaultID:                 "vault_test",
@@ -316,7 +372,7 @@ func TestPlanSyncUploadsAfterExplicitRemoteDeleteResolution(t *testing.T) {
 	baseHash := sha256Hex(baseContent)
 
 	first := beginSyncForTest(t, store, "client_a")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID: first.SessionID,
 		ClientID:  "client_a",
 		VaultID:   "vault_test",
@@ -328,15 +384,15 @@ func TestPlanSyncUploadsAfterExplicitRemoteDeleteResolution(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("plan first sync: %v", err)
 	}
-	if err := store.StageUpload(ctx, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
+	if err := store.StageUpload(ctx, testUserID, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
 		t.Fatalf("stage first upload: %v", err)
 	}
-	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
+	if _, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
 		t.Fatalf("commit first sync: %v", err)
 	}
 
 	second := beginSyncForTest(t, store, "client_b")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               second.SessionID,
 		ClientID:                "client_b",
 		VaultID:                 "vault_test",
@@ -345,12 +401,12 @@ func TestPlanSyncUploadsAfterExplicitRemoteDeleteResolution(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("plan delete sync: %v", err)
 	}
-	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
+	if _, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
 		t.Fatalf("commit delete sync: %v", err)
 	}
 
 	third := beginSyncForTest(t, store, "client_a")
-	plan, err := store.PlanSync(ctx, ManifestRequest{
+	plan, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               third.SessionID,
 		ClientID:                "client_a",
 		VaultID:                 "vault_test",
@@ -379,7 +435,7 @@ func TestPlanSyncDeletesRemoteAfterExplicitLocalDeleteResolution(t *testing.T) {
 	remoteHash := sha256Hex(remoteContent)
 
 	first := beginSyncForTest(t, store, "client_a")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID: first.SessionID,
 		ClientID:  "client_a",
 		VaultID:   "vault_test",
@@ -391,15 +447,15 @@ func TestPlanSyncDeletesRemoteAfterExplicitLocalDeleteResolution(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("plan first sync: %v", err)
 	}
-	if err := store.StageUpload(ctx, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
+	if err := store.StageUpload(ctx, testUserID, first.SessionID, "client_a", "note.md", baseHash, int64(len(baseContent)), bytes.NewReader(baseContent)); err != nil {
 		t.Fatalf("stage first upload: %v", err)
 	}
-	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
+	if _, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: first.SessionID, ClientID: "client_a"}); err != nil {
 		t.Fatalf("commit first sync: %v", err)
 	}
 
 	second := beginSyncForTest(t, store, "client_b")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               second.SessionID,
 		ClientID:                "client_b",
 		VaultID:                 "vault_test",
@@ -413,15 +469,15 @@ func TestPlanSyncDeletesRemoteAfterExplicitLocalDeleteResolution(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("plan remote update sync: %v", err)
 	}
-	if err := store.StageUpload(ctx, second.SessionID, "client_b", "note.md", remoteHash, int64(len(remoteContent)), bytes.NewReader(remoteContent)); err != nil {
+	if err := store.StageUpload(ctx, testUserID, second.SessionID, "client_b", "note.md", remoteHash, int64(len(remoteContent)), bytes.NewReader(remoteContent)); err != nil {
 		t.Fatalf("stage remote update: %v", err)
 	}
-	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
+	if _, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
 		t.Fatalf("commit remote update: %v", err)
 	}
 
 	third := beginSyncForTest(t, store, "client_a")
-	plan, err := store.PlanSync(ctx, ManifestRequest{
+	plan, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               third.SessionID,
 		ClientID:                "client_a",
 		VaultID:                 "vault_test",
@@ -447,7 +503,7 @@ func TestExpiredLockCleanupRemovesAbandonedStaging(t *testing.T) {
 	hash := sha256Hex(content)
 
 	begin := beginSyncForTest(t, store, "client_a")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID: begin.SessionID,
 		ClientID:  "client_a",
 		VaultID:   "vault_test",
@@ -459,7 +515,7 @@ func TestExpiredLockCleanupRemovesAbandonedStaging(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("plan sync: %v", err)
 	}
-	if err := store.StageUpload(ctx, begin.SessionID, "client_a", "note.md", hash, int64(len(content)), bytes.NewReader(content)); err != nil {
+	if err := store.StageUpload(ctx, testUserID, begin.SessionID, "client_a", "note.md", hash, int64(len(content)), bytes.NewReader(content)); err != nil {
 		t.Fatalf("stage upload: %v", err)
 	}
 	if _, err := os.Stat(store.stagingSessionDir(begin.SessionID)); err != nil {
@@ -469,12 +525,12 @@ func TestExpiredLockCleanupRemovesAbandonedStaging(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `
 		UPDATE sync_locks
 		SET expires_at = ?
-		WHERE id = 1
-	`, timestamp(time.Now().Add(-time.Second))); err != nil {
+		WHERE vault_id = ?
+	`, timestamp(time.Now().Add(-time.Second)), testVaultID); err != nil {
 		t.Fatalf("expire lock: %v", err)
 	}
 
-	status, err := store.SyncStatus(ctx)
+	status, err := store.SyncStatus(ctx, testUserID, testVaultID)
 	if err != nil {
 		t.Fatalf("load sync status: %v", err)
 	}
@@ -485,7 +541,7 @@ func TestExpiredLockCleanupRemovesAbandonedStaging(t *testing.T) {
 		t.Fatalf("expected abandoned staging directory to be removed, got %v", err)
 	}
 
-	if _, err := store.BeginSync(ctx, BeginSyncRequest{
+	if _, err := store.BeginSync(ctx, testUserID, BeginSyncRequest{
 		ClientID:   "client_b",
 		ClientName: "B",
 		VaultID:    "vault_test",
@@ -502,20 +558,20 @@ func TestReapExpiredLockReportsTransitionOnce(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `
 		UPDATE sync_locks
 		SET expires_at = ?
-		WHERE id = 1
-	`, timestamp(time.Now().Add(-time.Second))); err != nil {
+		WHERE vault_id = ?
+	`, timestamp(time.Now().Add(-time.Second)), testVaultID); err != nil {
 		t.Fatalf("expire lock: %v", err)
 	}
 
-	reaped, err := store.ReapExpiredLock(ctx)
+	reaped, err := store.ReapExpiredLocks(ctx)
 	if err != nil {
 		t.Fatalf("reap expired lock: %v", err)
 	}
-	if !reaped {
+	if len(reaped) != 1 || reaped[0] != testVaultID {
 		t.Fatalf("expected first stale-lock reap to report a transition")
 	}
 
-	status, err := store.SyncStatus(ctx)
+	status, err := store.SyncStatus(ctx, testUserID, testVaultID)
 	if err != nil {
 		t.Fatalf("load sync status: %v", err)
 	}
@@ -523,11 +579,11 @@ func TestReapExpiredLockReportsTransitionOnce(t *testing.T) {
 		t.Fatalf("expected stale lock status, got %q", status.State)
 	}
 
-	reaped, err = store.ReapExpiredLock(ctx)
+	reaped, err = store.ReapExpiredLocks(ctx)
 	if err != nil {
 		t.Fatalf("reap expired lock again: %v", err)
 	}
-	if reaped {
+	if len(reaped) != 0 {
 		t.Fatalf("expected second stale-lock reap to report no transition")
 	}
 
@@ -551,7 +607,7 @@ func TestCommitRejectsMissingStagedUpload(t *testing.T) {
 	hash := sha256Hex(content)
 
 	begin := beginSyncForTest(t, store, "client_a")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID: begin.SessionID,
 		ClientID:  "client_a",
 		VaultID:   "vault_test",
@@ -564,22 +620,22 @@ func TestCommitRejectsMissingStagedUpload(t *testing.T) {
 		t.Fatalf("plan sync: %v", err)
 	}
 
-	_, err := store.CommitSync(ctx, CommitRequest{SessionID: begin.SessionID, ClientID: "client_a"})
+	_, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: begin.SessionID, ClientID: "client_a"})
 	if !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("expected ErrBadRequest for missing staged upload, got %v", err)
 	}
 
-	revision, err := store.ServerRevision(ctx)
+	revision, err := store.ServerRevision(ctx, testUserID, testVaultID)
 	if err != nil {
 		t.Fatalf("load server revision: %v", err)
 	}
 	if revision != 0 {
 		t.Fatalf("expected server revision to remain 0, got %d", revision)
 	}
-	if _, err := store.DownloadFile(ctx, "note.md"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.DownloadFile(ctx, testUserID, testVaultID, "note.md"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected missing remote file after rejected commit, got %v", err)
 	}
-	if err := store.AbortSync(ctx, AbortRequest{SessionID: begin.SessionID, ClientID: "client_a"}); err != nil {
+	if err := store.AbortSync(ctx, testUserID, AbortRequest{SessionID: begin.SessionID, ClientID: "client_a"}); err != nil {
 		t.Fatalf("abort failed sync: %v", err)
 	}
 }
@@ -595,7 +651,7 @@ func TestCommitRejectsConflictPlan(t *testing.T) {
 	commitFileForTest(t, store, "client_a", 0, "note.md", baseContent)
 
 	second := beginSyncForTest(t, store, "client_b")
-	plan, err := store.PlanSync(ctx, ManifestRequest{
+	plan, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               second.SessionID,
 		ClientID:                "client_b",
 		VaultID:                 "vault_test",
@@ -614,19 +670,19 @@ func TestCommitRejectsConflictPlan(t *testing.T) {
 		t.Fatalf("expected conflict plan, got %#v", plan.Actions)
 	}
 
-	_, err = store.CommitSync(ctx, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"})
+	_, err = store.CommitSync(ctx, testUserID, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"})
 	if !errors.Is(err, ErrConflictDetected) {
 		t.Fatalf("expected ErrConflictDetected, got %v", err)
 	}
 
-	download, err := store.DownloadFile(ctx, "note.md")
+	download, err := store.DownloadFile(ctx, testUserID, testVaultID, "note.md")
 	if err != nil {
 		t.Fatalf("download original file: %v", err)
 	}
 	if download.Hash != baseHash {
 		t.Fatalf("expected remote hash to remain %s, got %s", baseHash, download.Hash)
 	}
-	if err := store.AbortSync(ctx, AbortRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
+	if err := store.AbortSync(ctx, testUserID, AbortRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
 		t.Fatalf("abort conflict sync: %v", err)
 	}
 }
@@ -638,23 +694,23 @@ func TestSyncSessionRejectsWrongClientOwnership(t *testing.T) {
 	hash := sha256Hex(content)
 
 	begin := beginSyncForTest(t, store, "client_a")
-	if err := store.HeartbeatSync(ctx, HeartbeatRequest{SessionID: begin.SessionID, ClientID: "client_b"}); !errors.Is(err, ErrSyncSessionNotFound) {
+	if err := store.HeartbeatSync(ctx, testUserID, HeartbeatRequest{SessionID: begin.SessionID, ClientID: "client_b"}); !errors.Is(err, ErrSyncSessionNotFound) {
 		t.Fatalf("expected heartbeat ownership rejection, got %v", err)
 	}
-	if _, err := store.PlanSync(ctx, ManifestRequest{SessionID: begin.SessionID, ClientID: "client_b", VaultID: "vault_test"}); !errors.Is(err, ErrSyncSessionNotFound) {
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{SessionID: begin.SessionID, ClientID: "client_b", VaultID: "vault_test"}); !errors.Is(err, ErrSyncSessionNotFound) {
 		t.Fatalf("expected plan ownership rejection, got %v", err)
 	}
-	if err := store.StageUpload(ctx, begin.SessionID, "client_b", "note.md", hash, int64(len(content)), bytes.NewReader(content)); !errors.Is(err, ErrSyncSessionNotFound) {
+	if err := store.StageUpload(ctx, testUserID, begin.SessionID, "client_b", "note.md", hash, int64(len(content)), bytes.NewReader(content)); !errors.Is(err, ErrSyncSessionNotFound) {
 		t.Fatalf("expected upload ownership rejection, got %v", err)
 	}
-	if _, err := store.CommitSync(ctx, CommitRequest{SessionID: begin.SessionID, ClientID: "client_b"}); !errors.Is(err, ErrSyncSessionNotFound) {
+	if _, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: begin.SessionID, ClientID: "client_b"}); !errors.Is(err, ErrSyncSessionNotFound) {
 		t.Fatalf("expected commit ownership rejection, got %v", err)
 	}
-	if err := store.AbortSync(ctx, AbortRequest{SessionID: begin.SessionID, ClientID: "client_b"}); !errors.Is(err, ErrSyncSessionNotFound) {
+	if err := store.AbortSync(ctx, testUserID, AbortRequest{SessionID: begin.SessionID, ClientID: "client_b"}); !errors.Is(err, ErrSyncSessionNotFound) {
 		t.Fatalf("expected abort ownership rejection, got %v", err)
 	}
 
-	if err := store.AbortSync(ctx, AbortRequest{SessionID: begin.SessionID, ClientID: "client_a"}); err != nil {
+	if err := store.AbortSync(ctx, testUserID, AbortRequest{SessionID: begin.SessionID, ClientID: "client_a"}); err != nil {
 		t.Fatalf("owner should still be able to abort: %v", err)
 	}
 }
@@ -670,7 +726,7 @@ func TestHashMismatchLeavesRemoteStateUnchanged(t *testing.T) {
 	commitFileForTest(t, store, "client_a", 0, "note.md", baseContent)
 
 	second := beginSyncForTest(t, store, "client_b")
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               second.SessionID,
 		ClientID:                "client_b",
 		VaultID:                 "vault_test",
@@ -685,23 +741,23 @@ func TestHashMismatchLeavesRemoteStateUnchanged(t *testing.T) {
 		t.Fatalf("plan update sync: %v", err)
 	}
 
-	err := store.StageUpload(ctx, second.SessionID, "client_b", "note.md", newHash, int64(len(newContent)), bytes.NewReader([]byte("bad")))
+	err := store.StageUpload(ctx, testUserID, second.SessionID, "client_b", "note.md", newHash, int64(len(newContent)), bytes.NewReader([]byte("bad")))
 	if !errors.Is(err, ErrHashMismatch) {
 		t.Fatalf("expected ErrHashMismatch, got %v", err)
 	}
-	_, err = store.CommitSync(ctx, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"})
+	_, err = store.CommitSync(ctx, testUserID, CommitRequest{SessionID: second.SessionID, ClientID: "client_b"})
 	if !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("expected commit to reject missing validated upload, got %v", err)
 	}
 
-	revision, err := store.ServerRevision(ctx)
+	revision, err := store.ServerRevision(ctx, testUserID, testVaultID)
 	if err != nil {
 		t.Fatalf("load server revision: %v", err)
 	}
 	if revision != 1 {
 		t.Fatalf("expected server revision to remain 1, got %d", revision)
 	}
-	download, err := store.DownloadFile(ctx, "note.md")
+	download, err := store.DownloadFile(ctx, testUserID, testVaultID, "note.md")
 	if err != nil {
 		t.Fatalf("download original file: %v", err)
 	}
@@ -711,7 +767,7 @@ func TestHashMismatchLeavesRemoteStateUnchanged(t *testing.T) {
 	if _, err := os.Stat(store.BlobPath(newHash)); !os.IsNotExist(err) {
 		t.Fatalf("expected rejected blob to be absent, got %v", err)
 	}
-	if err := store.AbortSync(ctx, AbortRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
+	if err := store.AbortSync(ctx, testUserID, AbortRequest{SessionID: second.SessionID, ClientID: "client_b"}); err != nil {
 		t.Fatalf("abort failed update sync: %v", err)
 	}
 }
@@ -723,8 +779,9 @@ func TestRestartWithExpiredActiveLockRecovers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open initial store: %v", err)
 	}
+	seedTestUserAndVault(t, store)
 
-	begin, err := store.BeginSync(ctx, BeginSyncRequest{
+	begin, err := store.BeginSync(ctx, testUserID, BeginSyncRequest{
 		ClientID:   "client_a",
 		ClientName: "A",
 		VaultID:    "vault_test",
@@ -735,8 +792,8 @@ func TestRestartWithExpiredActiveLockRecovers(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `
 		UPDATE sync_locks
 		SET expires_at = ?
-		WHERE id = 1
-	`, timestamp(time.Now().Add(-time.Second))); err != nil {
+		WHERE vault_id = ?
+	`, timestamp(time.Now().Add(-time.Second)), testVaultID); err != nil {
 		t.Fatalf("expire lock: %v", err)
 	}
 	if err := os.MkdirAll(store.stagingSessionDir(begin.SessionID), 0o755); err != nil {
@@ -756,7 +813,7 @@ func TestRestartWithExpiredActiveLockRecovers(t *testing.T) {
 		}
 	}()
 
-	status, err := reopened.SyncStatus(ctx)
+	status, err := reopened.SyncStatus(ctx, testUserID, testVaultID)
 	if err != nil {
 		t.Fatalf("load status after restart: %v", err)
 	}
@@ -766,7 +823,7 @@ func TestRestartWithExpiredActiveLockRecovers(t *testing.T) {
 	if _, err := os.Stat(reopened.stagingSessionDir(begin.SessionID)); !os.IsNotExist(err) {
 		t.Fatalf("expected stale staging to be removed after restart recovery, got %v", err)
 	}
-	if _, err := reopened.BeginSync(ctx, BeginSyncRequest{
+	if _, err := reopened.BeginSync(ctx, testUserID, BeginSyncRequest{
 		ClientID:   "client_b",
 		ClientName: "B",
 		VaultID:    "vault_test",
@@ -782,6 +839,7 @@ func newTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+	seedTestUserAndVault(t, store)
 	t.Cleanup(func() {
 		if err := store.Close(); err != nil {
 			t.Errorf("close store: %v", err)
@@ -791,10 +849,31 @@ func newTestStore(t *testing.T) *Store {
 	return store
 }
 
+func seedTestUserAndVault(t *testing.T, store *Store) {
+	t.Helper()
+
+	now := timestamp(time.Now())
+	if _, err := store.db.ExecContext(context.Background(), `
+		INSERT OR IGNORE INTO users (id, email, first_name, display_name, role, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, testUserID, "test@example.com", "Test", "Test User", UserRoleAdmin, UserStatusActive, now, now); err != nil {
+		t.Fatalf("seed test user: %v", err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `
+		INSERT OR IGNORE INTO vaults (id, user_id, name, revision, status, created_at, updated_at)
+		VALUES (?, ?, ?, 0, ?, ?, ?)
+	`, testVaultID, testUserID, "Test Vault", VaultStatusActive, now, now); err != nil {
+		t.Fatalf("seed test vault: %v", err)
+	}
+	if _, err := store.CurrentAPIKey(context.Background(), testUserID); err != nil {
+		t.Fatalf("seed test api key: %v", err)
+	}
+}
+
 func beginSyncForTest(t *testing.T, store *Store, clientID string) BeginSyncResult {
 	t.Helper()
 
-	begin, err := store.BeginSync(context.Background(), BeginSyncRequest{
+	begin, err := store.BeginSync(context.Background(), testUserID, BeginSyncRequest{
 		ClientID:   clientID,
 		ClientName: clientID,
 		VaultID:    "vault_test",
@@ -812,7 +891,7 @@ func commitFileForTest(t *testing.T, store *Store, clientID string, lastKnownSer
 	ctx := context.Background()
 	hash := sha256Hex(content)
 	begin := beginSyncForTest(t, store, clientID)
-	if _, err := store.PlanSync(ctx, ManifestRequest{
+	if _, err := store.PlanSync(ctx, testUserID, ManifestRequest{
 		SessionID:               begin.SessionID,
 		ClientID:                clientID,
 		VaultID:                 "vault_test",
@@ -826,10 +905,10 @@ func commitFileForTest(t *testing.T, store *Store, clientID string, lastKnownSer
 	}); err != nil {
 		t.Fatalf("plan test file sync: %v", err)
 	}
-	if err := store.StageUpload(ctx, begin.SessionID, clientID, path, hash, int64(len(content)), bytes.NewReader(content)); err != nil {
+	if err := store.StageUpload(ctx, testUserID, begin.SessionID, clientID, path, hash, int64(len(content)), bytes.NewReader(content)); err != nil {
 		t.Fatalf("stage test file upload: %v", err)
 	}
-	commit, err := store.CommitSync(ctx, CommitRequest{SessionID: begin.SessionID, ClientID: clientID})
+	commit, err := store.CommitSync(ctx, testUserID, CommitRequest{SessionID: begin.SessionID, ClientID: clientID})
 	if err != nil {
 		t.Fatalf("commit test file sync: %v", err)
 	}

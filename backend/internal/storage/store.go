@@ -30,8 +30,7 @@ type SyncStatus struct {
 	StartedAt  string
 }
 
-// Open opens the SQLite database, applies migrations, and ensures required
-// singleton rows exist.
+// Open opens the SQLite database and applies migrations.
 func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if dataDir == "" {
 		return nil, fmt.Errorf("data directory is required")
@@ -57,10 +56,6 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, err
 	}
 	if err := store.Migrate(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := store.ensureSingletonRows(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -93,40 +88,6 @@ func (s *Store) configure(ctx context.Context) error {
 
 	if err := s.db.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping sqlite database: %w", err)
-	}
-
-	return nil
-}
-
-func (s *Store) ensureSingletonRows(ctx context.Context) error {
-	now := timestamp(time.Now())
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin singleton setup transaction: %w", err)
-	}
-	defer rollback(tx)
-
-	if _, err := tx.ExecContext(ctx, `
-		INSERT OR IGNORE INTO server_state (id, revision, updated_at)
-		VALUES (1, 0, ?)
-	`, now); err != nil {
-		return fmt.Errorf("ensure server_state row: %w", err)
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		INSERT OR IGNORE INTO sync_locks (id, status)
-		VALUES (1, 'IDLE')
-	`); err != nil {
-		return fmt.Errorf("ensure sync_locks row: %w", err)
-	}
-
-	if err := ensureAPIKeyTx(ctx, tx, now); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit singleton setup transaction: %w", err)
 	}
 
 	return nil

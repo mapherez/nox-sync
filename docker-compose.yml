@@ -8,6 +8,10 @@ services:
     environment:
       NOX_SYNC_ADDR: ":8080"
       NOX_SYNC_DATA_DIR: "/data"
+      NOX_SYNC_PUBLIC_URL: "${NOX_SYNC_PUBLIC_URL:-http://localhost:5710}"
+      NOX_SYNC_GOOGLE_CLIENT_ID: "${NOX_SYNC_GOOGLE_CLIENT_ID:-}"
+      NOX_SYNC_GOOGLE_CLIENT_SECRET: "${NOX_SYNC_GOOGLE_CLIENT_SECRET:-}"
+      NOX_SYNC_ADMIN_EMAILS: "${NOX_SYNC_ADMIN_EMAILS:-}"
     volumes:
       - nox-sync-data:/data
 

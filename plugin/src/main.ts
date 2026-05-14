@@ -19,7 +19,10 @@ interface NoxSyncSettings {
   apiKey: string;
   clientName: string;
   clientId: string;
-  vaultId: string;
+  localVaultId: string;
+  selectedVaultId: string;
+  backendVaults: BackendVault[];
+  vaultStates: Record<string, VaultSyncState>;
   lastKnownServerRevision: number;
   knownFileHashes: Record<string, string>;
   knownFileRevisions: Record<string, number>;
@@ -29,7 +32,32 @@ interface NoxSyncSettings {
   syncHiddenFiles: boolean;
 }
 
+interface LegacyNoxSyncSettings {
+  vaultId?: string;
+}
+
+interface BackendVault {
+  vaultId: string;
+  name: string;
+  revision: number;
+  updatedAt: string;
+}
+
+interface BackendVaultListResponse {
+  vaults: BackendVault[];
+}
+
+interface VaultSyncState {
+  lastKnownServerRevision: number;
+  knownFileHashes: Record<string, string>;
+  knownFileRevisions: Record<string, number>;
+  pendingDeletedPaths: string[];
+  pendingConflicts: string[];
+  pendingConflictDetails: Record<string, PendingConflict>;
+}
+
 interface BackendStatusResponse {
+  vaultId?: string;
   serverRevision: number;
   sync: {
     state: string;
@@ -129,7 +157,10 @@ const DEFAULT_SETTINGS: NoxSyncSettings = {
   apiKey: "",
   clientName: "",
   clientId: "",
-  vaultId: "",
+  localVaultId: "",
+  selectedVaultId: "",
+  backendVaults: [],
+  vaultStates: {},
   lastKnownServerRevision: 0,
   knownFileHashes: {},
   knownFileRevisions: {},
@@ -138,6 +169,28 @@ const DEFAULT_SETTINGS: NoxSyncSettings = {
   pendingConflictDetails: {},
   syncHiddenFiles: false,
 };
+
+function emptyVaultSyncState(): VaultSyncState {
+  return {
+    lastKnownServerRevision: 0,
+    knownFileHashes: {},
+    knownFileRevisions: {},
+    pendingDeletedPaths: [],
+    pendingConflicts: [],
+    pendingConflictDetails: {},
+  };
+}
+
+function cloneVaultSyncState(state: Partial<VaultSyncState> = {}): VaultSyncState {
+  return {
+    lastKnownServerRevision: state.lastKnownServerRevision ?? 0,
+    knownFileHashes: { ...(state.knownFileHashes ?? {}) },
+    knownFileRevisions: { ...(state.knownFileRevisions ?? {}) },
+    pendingDeletedPaths: [...(state.pendingDeletedPaths ?? [])],
+    pendingConflicts: [...(state.pendingConflicts ?? [])],
+    pendingConflictDetails: { ...(state.pendingConflictDetails ?? {}) },
+  };
+}
 
 const STATE_CLASSES = Object.values(SyncButtonState).map(
   (state) => `nox-sync-state-${state.toLowerCase()}`,
@@ -195,11 +248,16 @@ export default class NoxSyncPlugin extends Plugin {
     this.addSettingTab(new NoxSyncSettingTab(this.app, this));
     this.registerVaultEventHandlers();
     this.setButtonState(SyncButtonState.Unknown);
-    if (await this.refreshLocalManifestState()) {
+    if (this.hasCredentials()) {
+      await this.refreshBackendVaults(true);
+    }
+    if (this.hasSyncTarget() && (await this.refreshLocalManifestState())) {
       const connected = await this.refreshBackendStatus();
       if (connected) {
         this.connectStatusStream();
       }
+    } else if (this.hasCredentials()) {
+      this.setErrorState("Select or create a backend vault in NoX Sync settings.");
     }
   }
 
@@ -212,20 +270,144 @@ export default class NoxSyncPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const loaded = ((await this.loadData()) ?? {}) as Partial<NoxSyncSettings>;
+    const loaded = ((await this.loadData()) ?? {}) as Partial<NoxSyncSettings> & LegacyNoxSyncSettings;
+    const selectedVaultId = loaded.selectedVaultId ?? "";
+    const vaultStates = Object.fromEntries(
+      Object.entries(loaded.vaultStates ?? {}).map(([vaultId, state]) => [vaultId, cloneVaultSyncState(state)]),
+    );
+
+    if (selectedVaultId && !vaultStates[selectedVaultId]) {
+      vaultStates[selectedVaultId] = cloneVaultSyncState({
+        lastKnownServerRevision: loaded.lastKnownServerRevision,
+        knownFileHashes: loaded.knownFileHashes,
+        knownFileRevisions: loaded.knownFileRevisions,
+        pendingDeletedPaths: loaded.pendingDeletedPaths,
+        pendingConflicts: loaded.pendingConflicts,
+        pendingConflictDetails: loaded.pendingConflictDetails,
+      });
+    }
+
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...loaded,
-      knownFileHashes: { ...(loaded.knownFileHashes ?? {}) },
-      knownFileRevisions: { ...(loaded.knownFileRevisions ?? {}) },
-      pendingDeletedPaths: [...(loaded.pendingDeletedPaths ?? [])],
-      pendingConflicts: [...(loaded.pendingConflicts ?? [])],
-      pendingConflictDetails: { ...(loaded.pendingConflictDetails ?? {}) },
+      localVaultId: loaded.localVaultId || loaded.vaultId || "",
+      selectedVaultId,
+      backendVaults: [...(loaded.backendVaults ?? [])],
+      vaultStates,
+      ...cloneVaultSyncState(vaultStates[selectedVaultId] ?? emptyVaultSyncState()),
     };
   }
 
   async saveSettings(): Promise<void> {
+    this.persistActiveVaultState();
     await this.saveData(this.settings);
+  }
+
+  private persistActiveVaultState(): void {
+    const vaultId = this.settings.selectedVaultId.trim();
+    if (!vaultId) {
+      return;
+    }
+
+    this.settings.vaultStates[vaultId] = cloneVaultSyncState({
+      lastKnownServerRevision: this.settings.lastKnownServerRevision,
+      knownFileHashes: this.settings.knownFileHashes,
+      knownFileRevisions: this.settings.knownFileRevisions,
+      pendingDeletedPaths: this.settings.pendingDeletedPaths,
+      pendingConflicts: this.settings.pendingConflicts,
+      pendingConflictDetails: this.settings.pendingConflictDetails,
+    });
+  }
+
+  private loadActiveVaultState(): void {
+    const vaultId = this.settings.selectedVaultId.trim();
+    const state = vaultId ? this.settings.vaultStates[vaultId] : undefined;
+    Object.assign(this.settings, cloneVaultSyncState(state ?? emptyVaultSyncState()));
+  }
+
+  async selectBackendVault(vaultId: string): Promise<void> {
+    this.persistActiveVaultState();
+    this.settings.selectedVaultId = vaultId.trim();
+    this.loadActiveVaultState();
+    this.latestBackendStatus = null;
+    this.localDirty = false;
+    await this.saveSettings();
+    this.closeStatusStream();
+
+    if (this.hasSyncTarget()) {
+      await this.refreshLocalAndBackendStatus();
+      this.connectStatusStream();
+    } else {
+      this.setErrorState("Select or create a backend vault in NoX Sync settings.");
+    }
+  }
+
+  async refreshBackendVaults(silent = false): Promise<boolean> {
+    if (!this.hasCredentials()) {
+      if (!silent) {
+        new Notice("NoX Sync server URL and API key are required.");
+      }
+      return false;
+    }
+
+    try {
+      const response = await this.requestJSON<BackendVaultListResponse>("/v1/vaults", "GET");
+      const vaults = response.vaults ?? [];
+      this.settings.backendVaults = vaults;
+
+      const selected = this.settings.selectedVaultId.trim();
+      if (selected && !vaults.some((vault) => vault.vaultId === selected)) {
+        await this.selectBackendVault("");
+        if (!silent) {
+          new Notice("Selected backend vault is missing or deleted. Select another vault.");
+        }
+        return false;
+      }
+
+      await this.saveSettings();
+      return true;
+    } catch (error) {
+      if (error instanceof BackendRequestError) {
+        const action = classifyBackendError(error);
+        this.setButtonState(action.state, action.detail);
+        if (!silent) {
+          new Notice(action.notice);
+        }
+        return false;
+      }
+
+      this.setButtonState(SyncButtonState.ServerUnreachable);
+      if (!silent) {
+        new Notice("NoX Sync could not load backend vaults.");
+      }
+      return false;
+    }
+  }
+
+  async createBackendVault(): Promise<void> {
+    if (!this.hasCredentials()) {
+      new Notice("NoX Sync server URL and API key are required.");
+      return;
+    }
+
+    const name = this.app.vault.getName() || "Obsidian vault";
+    try {
+      const vault = await this.requestJSON<BackendVault>("/v1/vaults", "POST", { name });
+      this.settings.backendVaults = [
+        vault,
+        ...this.settings.backendVaults.filter((existing) => existing.vaultId !== vault.vaultId),
+      ];
+      await this.selectBackendVault(vault.vaultId);
+      new Notice(`NoX Sync backend vault created: ${vault.name}`);
+    } catch (error) {
+      if (error instanceof BackendRequestError) {
+        const action = classifyBackendError(error);
+        this.setButtonState(action.state, action.detail);
+        new Notice(action.notice);
+        return;
+      }
+      new Notice("NoX Sync could not create the backend vault.");
+    }
   }
 
   async testConnection(): Promise<void> {
@@ -255,8 +437,13 @@ export default class NoxSyncPlugin extends Plugin {
         return;
       }
 
-      await this.refreshBackendStatus();
-      this.connectStatusStream();
+      await this.refreshBackendVaults(true);
+      if (this.hasSyncTarget()) {
+        await this.refreshBackendStatus();
+        this.connectStatusStream();
+      } else {
+        this.setErrorState("Select or create a backend vault in NoX Sync settings.");
+      }
       new Notice("NoX Sync connection successful.");
     } catch {
       this.setButtonState(SyncButtonState.ServerUnreachable);
@@ -284,8 +471,8 @@ export default class NoxSyncPlugin extends Plugin {
       changed = true;
     }
 
-    if (!this.settings.vaultId) {
-      this.settings.vaultId = `vault_${randomId()}`;
+    if (!this.settings.localVaultId) {
+      this.settings.localVaultId = `vault_${randomId()}`;
       changed = true;
     }
 
@@ -328,10 +515,16 @@ export default class NoxSyncPlugin extends Plugin {
       this.closeStatusStream();
       return false;
     }
+    if (!this.hasSyncTarget()) {
+      this.setErrorState("Select or create a backend vault in NoX Sync settings.");
+      this.closeStatusStream();
+      return false;
+    }
 
     try {
+      const query = new URLSearchParams({ vaultId: this.settings.selectedVaultId.trim() });
       const response = await requestUrl({
-        url: `${this.normalizedServerUrl()}/v1/status`,
+        url: `${this.normalizedServerUrl()}/v1/status?${query.toString()}`,
         method: "GET",
         headers: this.authHeaders(),
       });
@@ -473,6 +666,11 @@ export default class NoxSyncPlugin extends Plugin {
       new Notice("Invalid NoX Sync API key. Check NoX Sync settings.");
       return;
     }
+    if (!this.hasSyncTarget()) {
+      this.setErrorState("Select or create a backend vault in NoX Sync settings.");
+      new Notice("Select or create a backend vault in NoX Sync settings.");
+      return;
+    }
 
     let sessionId: string | null = null;
     let committed = false;
@@ -528,7 +726,7 @@ export default class NoxSyncPlugin extends Plugin {
     return this.requestJSON<BeginSyncResponse>("/v1/sync/begin", "POST", {
       clientId: this.settings.clientId,
       clientName: this.settings.clientName,
-      vaultId: this.settings.vaultId,
+      vaultId: this.settings.selectedVaultId,
     });
   }
 
@@ -536,7 +734,7 @@ export default class NoxSyncPlugin extends Plugin {
     const request: ManifestRequest = {
       sessionId,
       clientId: this.settings.clientId,
-      vaultId: this.settings.vaultId,
+      vaultId: this.settings.selectedVaultId,
       lastKnownServerRevision: this.settings.lastKnownServerRevision,
       files: manifest.files,
       deletedPaths: manifest.deletedPaths,
@@ -617,7 +815,7 @@ export default class NoxSyncPlugin extends Plugin {
 
   private async downloadRemoteFile(action: PlanAction): Promise<DownloadedFile> {
     const path = this.normalizedActionPath(action);
-    const query = new URLSearchParams({ path });
+    const query = new URLSearchParams({ vaultId: this.settings.selectedVaultId.trim(), path });
     const response = await this.requestBinary(`/v1/files/download?${query.toString()}`);
     const headerHash = responseHeader(response, "X-NoX-Sync-Hash");
     const expectedHash = action.remoteHash || headerHash;
@@ -1363,6 +1561,10 @@ export default class NoxSyncPlugin extends Plugin {
   }
 
   private applyBackendStatus(status: BackendStatusResponse): void {
+    if (status.vaultId && status.vaultId !== this.settings.selectedVaultId.trim()) {
+      return;
+    }
+
     this.latestBackendStatus = status;
 
     if (this.settings.pendingConflicts.length > 0) {
@@ -1546,13 +1748,15 @@ export default class NoxSyncPlugin extends Plugin {
     this.closeStatusStream();
     this.clearReconnectTimer();
 
-    if (!this.hasCredentials() || typeof EventSource === "undefined") {
+    if (!this.hasSyncTarget() || typeof EventSource === "undefined") {
       return;
     }
 
-    const url = `${this.normalizedServerUrl()}/v1/sync/events?api_key=${encodeURIComponent(
-      this.settings.apiKey.trim(),
-    )}`;
+    const query = new URLSearchParams({
+      vaultId: this.settings.selectedVaultId.trim(),
+      api_key: this.settings.apiKey.trim(),
+    });
+    const url = `${this.normalizedServerUrl()}/v1/sync/events?${query.toString()}`;
     const events = new EventSource(url);
     this.statusEvents = events;
 
@@ -1580,7 +1784,7 @@ export default class NoxSyncPlugin extends Plugin {
 
   private scheduleStatusReconnect(): void {
     this.clearReconnectTimer();
-    if (!this.hasCredentials()) {
+    if (!this.hasSyncTarget()) {
       return;
     }
 
@@ -1606,6 +1810,10 @@ export default class NoxSyncPlugin extends Plugin {
 
   private hasCredentials(): boolean {
     return this.settings.serverUrl.trim() !== "" && this.settings.apiKey.trim().startsWith("noxsync_");
+  }
+
+  private hasSyncTarget(): boolean {
+    return this.hasCredentials() && this.settings.selectedVaultId.trim() !== "";
   }
 
   private normalizedServerUrl(): string {
@@ -1799,7 +2007,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("API key")
-      .setDesc("Reusable noxsync_ API key from the backend admin page.")
+      .setDesc("Reusable noxsync_ API key from the backend dashboard.")
       .addText((text) => {
         text.inputEl.type = "password";
         text
@@ -1826,15 +2034,32 @@ class NoxSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Vault ID")
-      .setDesc("Local vault identity used for sync tracking.")
-      .addText((text) =>
-        text
-          .setPlaceholder("vault_...")
-          .setValue(this.plugin.settings.vaultId)
-          .onChange(async (value) => {
-            this.plugin.settings.vaultId = value.trim();
-            await this.plugin.saveSettings();
+      .setName("Backend vault")
+      .setDesc("Remote vault on this backend for the currently opened Obsidian vault.")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("", "Select a backend vault");
+        for (const vault of this.plugin.settings.backendVaults) {
+          dropdown.addOption(vault.vaultId, `${vault.name} (revision ${vault.revision})`);
+        }
+        dropdown.setValue(this.plugin.settings.selectedVaultId);
+        dropdown.onChange(async (value) => {
+          await this.plugin.selectBackendVault(value);
+          this.display();
+        });
+      })
+      .addButton((button) =>
+        button.setButtonText("Refresh vaults").onClick(async () => {
+          await this.plugin.refreshBackendVaults();
+          this.display();
+        }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("Create backend vault")
+          .setCta()
+          .onClick(async () => {
+            await this.plugin.createBackendVault();
+            this.display();
           }),
       );
 

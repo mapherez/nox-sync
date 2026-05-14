@@ -14,12 +14,13 @@ import (
 
 // StageUpload writes an upload to staging, validates its SHA-256 hash, and
 // records it against the active sync plan.
-func (s *Store) StageUpload(ctx context.Context, sessionID string, clientID string, vaultPath string, expectedHash string, expectedSize int64, body io.Reader) error {
+func (s *Store) StageUpload(ctx context.Context, userID string, sessionID string, clientID string, vaultPath string, expectedHash string, expectedSize int64, body io.Reader) error {
+	userID = stringsTrim(userID)
 	sessionID = stringsTrim(sessionID)
 	clientID = stringsTrim(clientID)
 	expectedHash = stringsTrim(expectedHash)
-	if sessionID == "" || clientID == "" {
-		return fmt.Errorf("%w: sessionId and clientId are required", ErrBadRequest)
+	if userID == "" || sessionID == "" || clientID == "" {
+		return fmt.Errorf("%w: userId, sessionId, and clientId are required", ErrBadRequest)
 	}
 	if err := validateSHA256(expectedHash); err != nil {
 		return err
@@ -30,7 +31,7 @@ func (s *Store) StageUpload(ctx context.Context, sessionID string, clientID stri
 		return err
 	}
 
-	if err := s.ensureActiveSession(ctx, sessionID, clientID); err != nil {
+	if _, err := s.ensureActiveSession(ctx, userID, sessionID, clientID); err != nil {
 		return err
 	}
 

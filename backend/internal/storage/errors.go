@@ -10,4 +10,5 @@ var (
 	ErrHashMismatch        = errors.New("hash mismatch")
 	ErrNotFound            = errors.New("not found")
 	ErrConflictDetected    = errors.New("conflict detected")
+	ErrForbidden           = errors.New("forbidden")
 )

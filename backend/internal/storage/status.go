@@ -8,31 +8,37 @@ import (
 	"time"
 )
 
-// ServerRevision returns the current backend vault revision.
-func (s *Store) ServerRevision(ctx context.Context) (int64, error) {
-	var revision int64
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT revision
-		FROM server_state
-		WHERE id = 1
-	`).Scan(&revision); err != nil {
-		return 0, fmt.Errorf("load server revision: %w", err)
+// ServerRevision returns the current backend revision for one active vault.
+func (s *Store) ServerRevision(ctx context.Context, userID string, vaultID string) (int64, error) {
+	vault, err := s.VaultByID(ctx, userID, vaultID)
+	if err != nil {
+		return 0, err
 	}
-
-	return revision, nil
+	return vault.Revision, nil
 }
 
-// SyncStatus returns the current sync lock state.
-func (s *Store) SyncStatus(ctx context.Context) (SyncStatus, error) {
-	status, _, err := s.RefreshSyncStatus(ctx)
+// SyncStatus returns the current sync lock state for one vault.
+func (s *Store) SyncStatus(ctx context.Context, userID string, vaultID string) (SyncStatus, error) {
+	status, _, err := s.RefreshSyncStatus(ctx, userID, vaultID)
 	return status, err
 }
 
-// RefreshSyncStatus returns the current sync lock state and reports whether an expired lock was reaped.
-func (s *Store) RefreshSyncStatus(ctx context.Context) (SyncStatus, bool, error) {
-	reaped, err := s.ReapExpiredLock(ctx)
+// RefreshSyncStatus returns one vault's sync lock state and reports whether it was reaped.
+func (s *Store) RefreshSyncStatus(ctx context.Context, userID string, vaultID string) (SyncStatus, bool, error) {
+	if _, err := s.VaultByID(ctx, userID, vaultID); err != nil {
+		return SyncStatus{}, false, err
+	}
+
+	reapedVaultIDs, err := s.ReapExpiredLocks(ctx)
 	if err != nil {
 		return SyncStatus{}, false, err
+	}
+	reaped := false
+	for _, reapedVaultID := range reapedVaultIDs {
+		if reapedVaultID == vaultID {
+			reaped = true
+			break
+		}
 	}
 
 	var status SyncStatus
@@ -44,8 +50,8 @@ func (s *Store) RefreshSyncStatus(ctx context.Context) (SyncStatus, bool, error)
 			COALESCE(client_name, ''),
 			COALESCE(acquired_at, '')
 		FROM sync_locks
-		WHERE id = 1
-	`).Scan(
+		WHERE vault_id = ?
+	`, vaultID).Scan(
 		&status.State,
 		&status.SessionID,
 		&status.ClientID,
@@ -53,7 +59,7 @@ func (s *Store) RefreshSyncStatus(ctx context.Context) (SyncStatus, bool, error)
 		&status.StartedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return SyncStatus{State: "IDLE"}, reaped, nil
+			return SyncStatus{State: SyncStateIdle}, reaped, nil
 		}
 		return SyncStatus{}, false, fmt.Errorf("load sync status: %w", err)
 	}
@@ -61,30 +67,52 @@ func (s *Store) RefreshSyncStatus(ctx context.Context) (SyncStatus, bool, error)
 	return status, reaped, nil
 }
 
-// ReapExpiredLock marks an expired active sync lock stale and removes its abandoned staging data.
-func (s *Store) ReapExpiredLock(ctx context.Context) (bool, error) {
-	var sessionID string
-	var status string
-	var expiresAt string
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(session_id, ''), status, COALESCE(expires_at, '')
+// ReapExpiredLocks marks all expired active sync locks stale and removes their abandoned staging data.
+func (s *Store) ReapExpiredLocks(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT vault_id, COALESCE(session_id, ''), COALESCE(expires_at, '')
 		FROM sync_locks
-		WHERE id = 1
-	`).Scan(&sessionID, &status, &expiresAt); err != nil {
-		return false, fmt.Errorf("load lock expiry: %w", err)
-	}
-
-	if status != SyncStateSyncing {
-		return false, nil
-	}
-
-	expired, err := isExpired(expiresAt, time.Now().UTC())
+		WHERE status = ?
+	`, SyncStateSyncing)
 	if err != nil {
-		return false, err
+		return nil, fmt.Errorf("load lock expiries: %w", err)
 	}
-	if !expired {
-		return false, nil
+	defer rows.Close()
+
+	type expiredLock struct {
+		vaultID   string
+		sessionID string
+	}
+	expiredLocks := []expiredLock{}
+	now := time.Now().UTC()
+	for rows.Next() {
+		var vaultID string
+		var sessionID string
+		var expiresAt string
+		if err := rows.Scan(&vaultID, &sessionID, &expiresAt); err != nil {
+			return nil, fmt.Errorf("scan lock expiry: %w", err)
+		}
+		expired, err := isExpired(expiresAt, now)
+		if err != nil {
+			return nil, err
+		}
+		if expired {
+			expiredLocks = append(expiredLocks, expiredLock{vaultID: vaultID, sessionID: sessionID})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate lock expiries: %w", err)
 	}
 
-	return s.markSessionStale(ctx, sessionID)
+	reaped := []string{}
+	for _, lock := range expiredLocks {
+		ok, err := s.markSessionStale(ctx, lock.vaultID, lock.sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			reaped = append(reaped, lock.vaultID)
+		}
+	}
+	return reaped, nil
 }

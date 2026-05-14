@@ -1,22 +1,24 @@
 # NoX Sync
 
-NoX Sync is a private, self-hosted sync system for Obsidian vaults. It is designed for people who want a simple backend they control, a reusable API key, and explicit manual sync instead of background cloud synchronization.
+NoX Sync is a private, self-hosted sync system for Obsidian vaults. It is designed for people who want a backend they control, Google-authenticated dashboard access, per-user API keys, multiple remote vaults, and explicit manual sync instead of background cloud synchronization.
 
 The project has two parts:
 
 - `backend/` - Go HTTP service with SQLite metadata, local filesystem blob storage, and Docker support.
 - `plugin/` - Obsidian plugin written in TypeScript using the Obsidian API, HTML, and CSS.
 
-NoX Sync does not use external databases, external sync providers, user accounts, realtime collaboration services, or automatic background sync.
+NoX Sync does not use external databases, external sync providers, vault sharing, realtime collaboration services, or automatic background sync.
 
 ## Features
 
 - Manual sync from the Obsidian ribbon button or `NoX Sync: Sync vault` command.
 - Self-hosted backend with persistent `/data` storage.
-- Reusable `noxsync_` API key shown on a local admin page.
+- Google-authenticated `/vault-dashboard` with admin allowlist management.
+- One reusable `noxsync_` API key per active user.
+- Multiple remote vaults per user, selected from the Obsidian plugin settings.
 - HTTP + JSON API under `/v1`.
 - Server-sent events for backend status updates.
-- Backend-enforced single sync lock with heartbeat and stale-lock recovery.
+- Backend-enforced per-vault sync lock with heartbeat and stale-lock recovery.
 - Manifest-based planning for uploads, downloads, deletes, conflicts, and no-op actions.
 - SHA-256 validation for uploads and downloads.
 - Staged upload and commit flow so interrupted syncs do not change current remote state.
@@ -34,13 +36,22 @@ Start the backend with Docker Compose:
 docker compose up -d
 ```
 
-Open the admin page:
+Set the required dashboard environment variables before production use:
 
-```text
-http://localhost:8080/
+```bash
+NOX_SYNC_PUBLIC_URL=https://sync.example.com
+NOX_SYNC_GOOGLE_CLIENT_ID=...
+NOX_SYNC_GOOGLE_CLIENT_SECRET=...
+NOX_SYNC_ADMIN_EMAILS=you@example.com
 ```
 
-Copy the Server URL and API key into the NoX Sync plugin settings in Obsidian, then use **Test connection**.
+Open the dashboard:
+
+```text
+http://localhost:5710/vault-dashboard
+```
+
+Sign in with an allowlisted Google account. Copy the Server URL and API key into the NoX Sync plugin settings in Obsidian, use **Refresh vaults**, then select or create the backend vault to sync with.
 
 For the full first-run flow, see [User setup guide](docs/user-setup.md).
 
@@ -79,7 +90,7 @@ The backend stores all persistent state under `/data`:
 - `/data/staging`
 - `/data/logs`
 
-Back up the whole `/data` directory as one unit. Restoring only the database or only the blobs can leave metadata and file content out of sync.
+Back up the whole `/data` directory as one unit. Restoring only the database or only the blobs can leave metadata and file content out of sync. The `multi-vault` schema is a breaking change from `0.1.0`; old single-vault data is not automatically migrated.
 
 See [Backend configuration](docs/backend-configuration.md) for environment variables and Docker details.
 
@@ -135,4 +146,4 @@ The release tag should match the version in `plugin/manifest.json`.
 
 ## Safety Model
 
-NoX Sync treats the backend as the authority for sync locks, sessions, remote state, and commits. Files are not considered synced until content hashes are verified and the backend commit succeeds. Conflicts are explicit, and normal sync does not silently overwrite local or remote changes.
+NoX Sync treats the backend as the authority for users, vault ownership, sync locks, sessions, remote state, and commits. Files are not considered synced until content hashes are verified and the backend commit succeeds. Users cannot access each other's vaults, conflicts are explicit, and normal sync does not silently overwrite local or remote changes.
