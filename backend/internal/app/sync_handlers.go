@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -182,7 +183,11 @@ func (s *Server) requireMethod(w http.ResponseWriter, r *http.Request, method st
 }
 
 func (s *Server) broadcastStatus(r *http.Request) {
-	payload, err := s.statusPayload(r.Context())
+	s.broadcastStatusContext(r.Context())
+}
+
+func (s *Server) broadcastStatusContext(ctx context.Context) {
+	payload, err := s.statusPayload(ctx)
 	if err != nil {
 		return
 	}

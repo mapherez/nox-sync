@@ -96,7 +96,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"status":             "ready",
 		"version":            s.cfg.Version,
 		"dataDirInitialized": true,
-		"databasePath":        s.store.DBPath(),
+		"databasePath":       s.store.DBPath(),
 	})
 }
 
@@ -127,10 +127,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, err := s.statusPayload(r.Context())
+	payload, reaped, err := s.statusPayloadWithRefresh(r.Context())
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to load status.")
 		return
+	}
+	if reaped {
+		s.events.broadcast(payload)
 	}
 
 	writeJSON(w, http.StatusOK, payload)
@@ -151,7 +154,7 @@ func (s *Server) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	payload, err := s.statusPayload(r.Context())
+	payload, reaped, err := s.statusPayloadWithRefresh(r.Context())
 	if err != nil {
 		writeSSEError(w, "SERVER_ERROR", "Failed to load status.")
 		return
@@ -166,6 +169,9 @@ func (s *Server) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "event: status\ndata: %s\n\n", body)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
+	}
+	if reaped {
+		s.events.broadcast(payload)
 	}
 
 	events, unsubscribe := s.events.subscribe()
@@ -185,14 +191,19 @@ func (s *Server) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) statusPayload(ctx context.Context) (map[string]any, error) {
+	payload, _, err := s.statusPayloadWithRefresh(ctx)
+	return payload, err
+}
+
+func (s *Server) statusPayloadWithRefresh(ctx context.Context) (map[string]any, bool, error) {
 	revision, err := s.store.ServerRevision(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	syncStatus, err := s.store.SyncStatus(ctx)
+	syncStatus, reaped, err := s.store.RefreshSyncStatus(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	return map[string]any{
@@ -204,7 +215,30 @@ func (s *Server) statusPayload(ctx context.Context) (map[string]any, error) {
 			"clientName": syncStatus.ClientName,
 			"startedAt":  syncStatus.StartedAt,
 		},
-	}, nil
+	}, reaped, nil
+}
+
+func (s *Server) monitorStaleLocks(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.broadcastStaleLockIfNeeded(ctx)
+		}
+	}
+}
+
+func (s *Server) broadcastStaleLockIfNeeded(ctx context.Context) {
+	reaped, err := s.store.ReapExpiredLock(ctx)
+	if err != nil || !reaped {
+		return
+	}
+
+	s.broadcastStatusContext(ctx)
 }
 
 func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {

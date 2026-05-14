@@ -47,6 +47,10 @@ func Run(ctx context.Context, cfg Config) error {
 	}()
 
 	server := NewServer(cfg, store)
+	serverCtx, stopServer := context.WithCancel(ctx)
+	defer stopServer()
+	go server.monitorStaleLocks(serverCtx)
+
 	httpServer := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           server.Routes(),

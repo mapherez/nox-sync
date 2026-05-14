@@ -808,7 +808,7 @@ func (s *Store) ensureActiveSession(ctx context.Context, sessionID string, clien
 		return err
 	}
 	if expired {
-		if err := s.markSessionStale(ctx, sessionID); err != nil {
+		if _, err := s.markSessionStale(ctx, sessionID); err != nil {
 			return err
 		}
 		return ErrSyncSessionStale
@@ -890,31 +890,36 @@ func markSessionFailedTx(ctx context.Context, tx *sql.Tx, sessionID string, code
 	return nil
 }
 
-func (s *Store) markSessionStale(ctx context.Context, sessionID string) error {
+func (s *Store) markSessionStale(ctx context.Context, sessionID string) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin stale session transaction: %w", err)
+		return false, fmt.Errorf("begin stale session transaction: %w", err)
 	}
 	defer rollback(tx)
 
 	if err := markSessionFailedTx(ctx, tx, sessionID, "SYNC_SESSION_STALE", "Sync lock expired."); err != nil {
-		return err
+		return false, err
 	}
 
-	if _, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE sync_locks
 		SET status = ?, session_id = NULL, client_id = NULL, client_name = NULL, vault_id = NULL, acquired_at = NULL, heartbeat_at = NULL, expires_at = NULL
 		WHERE id = 1 AND session_id = ?
-	`, SyncStateStaleLock, sessionID); err != nil {
-		return fmt.Errorf("mark lock stale: %w", err)
+	`, SyncStateStaleLock, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("mark lock stale: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("check stale lock update: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit stale session transaction: %w", err)
+		return false, fmt.Errorf("commit stale session transaction: %w", err)
 	}
 
 	_ = os.RemoveAll(s.stagingSessionDir(sessionID))
-	return nil
+	return rowsAffected > 0, nil
 }
 
 func releaseLockTx(ctx context.Context, tx *sql.Tx, sessionID string, clientID string, status string) error {

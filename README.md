@@ -11,7 +11,7 @@ The product rules and implementation milestones live in `SPECS/`.
 
 ## Current State
 
-This repository is at Milestone 6:
+This repository is at Milestone 7 reliability hardening:
 
 - backend skeleton
 - plugin skeleton
@@ -60,7 +60,7 @@ This repository is at Milestone 6:
 - fixture vaults
 - naming conventions
 
-The first non-conflicting plugin sync path, initial user-facing conflict resolution, and the first reliability hardening pass are implemented. Later milestones continue failure-path coverage and release readiness.
+The first non-conflicting plugin sync path, user-facing conflict resolution, and the reliability hardening pass are implemented. Later milestones focus on release readiness.
 
 ## Development
 

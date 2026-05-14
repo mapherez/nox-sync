@@ -24,8 +24,15 @@ func (s *Store) ServerRevision(ctx context.Context) (int64, error) {
 
 // SyncStatus returns the current sync lock state.
 func (s *Store) SyncStatus(ctx context.Context) (SyncStatus, error) {
-	if err := s.reapExpiredLock(ctx); err != nil {
-		return SyncStatus{}, err
+	status, _, err := s.RefreshSyncStatus(ctx)
+	return status, err
+}
+
+// RefreshSyncStatus returns the current sync lock state and reports whether an expired lock was reaped.
+func (s *Store) RefreshSyncStatus(ctx context.Context) (SyncStatus, bool, error) {
+	reaped, err := s.ReapExpiredLock(ctx)
+	if err != nil {
+		return SyncStatus{}, false, err
 	}
 
 	var status SyncStatus
@@ -46,15 +53,16 @@ func (s *Store) SyncStatus(ctx context.Context) (SyncStatus, error) {
 		&status.StartedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return SyncStatus{State: "IDLE"}, nil
+			return SyncStatus{State: "IDLE"}, reaped, nil
 		}
-		return SyncStatus{}, fmt.Errorf("load sync status: %w", err)
+		return SyncStatus{}, false, fmt.Errorf("load sync status: %w", err)
 	}
 
-	return status, nil
+	return status, reaped, nil
 }
 
-func (s *Store) reapExpiredLock(ctx context.Context) error {
+// ReapExpiredLock marks an expired active sync lock stale and removes its abandoned staging data.
+func (s *Store) ReapExpiredLock(ctx context.Context) (bool, error) {
 	var sessionID string
 	var status string
 	var expiresAt string
@@ -63,19 +71,19 @@ func (s *Store) reapExpiredLock(ctx context.Context) error {
 		FROM sync_locks
 		WHERE id = 1
 	`).Scan(&sessionID, &status, &expiresAt); err != nil {
-		return fmt.Errorf("load lock expiry: %w", err)
+		return false, fmt.Errorf("load lock expiry: %w", err)
 	}
 
 	if status != SyncStateSyncing {
-		return nil
+		return false, nil
 	}
 
 	expired, err := isExpired(expiresAt, time.Now().UTC())
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !expired {
-		return nil
+		return false, nil
 	}
 
 	return s.markSessionStale(ctx, sessionID)

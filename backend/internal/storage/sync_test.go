@@ -494,6 +494,56 @@ func TestExpiredLockCleanupRemovesAbandonedStaging(t *testing.T) {
 	}
 }
 
+func TestReapExpiredLockReportsTransitionOnce(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	begin := beginSyncForTest(t, store, "client_a")
+	if _, err := store.db.ExecContext(ctx, `
+		UPDATE sync_locks
+		SET expires_at = ?
+		WHERE id = 1
+	`, timestamp(time.Now().Add(-time.Second))); err != nil {
+		t.Fatalf("expire lock: %v", err)
+	}
+
+	reaped, err := store.ReapExpiredLock(ctx)
+	if err != nil {
+		t.Fatalf("reap expired lock: %v", err)
+	}
+	if !reaped {
+		t.Fatalf("expected first stale-lock reap to report a transition")
+	}
+
+	status, err := store.SyncStatus(ctx)
+	if err != nil {
+		t.Fatalf("load sync status: %v", err)
+	}
+	if status.State != SyncStateStaleLock {
+		t.Fatalf("expected stale lock status, got %q", status.State)
+	}
+
+	reaped, err = store.ReapExpiredLock(ctx)
+	if err != nil {
+		t.Fatalf("reap expired lock again: %v", err)
+	}
+	if reaped {
+		t.Fatalf("expected second stale-lock reap to report no transition")
+	}
+
+	var sessionStatus string
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT status
+		FROM sync_sessions
+		WHERE session_id = ?
+	`, begin.SessionID).Scan(&sessionStatus); err != nil {
+		t.Fatalf("load stale session: %v", err)
+	}
+	if sessionStatus != SessionStatusFailed {
+		t.Fatalf("expected failed session status, got %q", sessionStatus)
+	}
+}
+
 func TestCommitRejectsMissingStagedUpload(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
