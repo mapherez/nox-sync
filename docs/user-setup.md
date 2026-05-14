@@ -37,13 +37,13 @@ npm install
 npm run build
 ```
 
-Manual Obsidian install uses these files:
+The build writes the manual Obsidian install package to `plugin/dist/`:
 
-- `plugin/manifest.json`
-- `plugin/styles.css`
 - `plugin/dist/main.js`
+- `plugin/dist/manifest.json`
+- `plugin/dist/styles.css`
 
-Place them in this Obsidian vault folder:
+Copy the contents of `plugin/dist/` into this Obsidian vault folder:
 
 ```text
 .obsidian/plugins/nox-sync/

@@ -1,6 +1,9 @@
 import esbuild from "esbuild";
+import { copyFile, mkdir } from "node:fs/promises";
 
 const production = process.argv.includes("production");
+
+await mkdir("dist", { recursive: true });
 
 await esbuild.build({
   banner: {
@@ -18,3 +21,8 @@ await esbuild.build({
   target: "es2022",
   treeShaking: true,
 });
+
+await Promise.all([
+  copyFile("manifest.json", "dist/manifest.json"),
+  copyFile("styles.css", "dist/styles.css"),
+]);

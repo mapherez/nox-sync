@@ -31,11 +31,11 @@ npm run test
 npm run build
 ```
 
-The manual install package consists of:
+The manual install package is the contents of `plugin/dist/`:
 
-- `plugin/manifest.json`
-- `plugin/styles.css`
 - `plugin/dist/main.js`
+- `plugin/dist/manifest.json`
+- `plugin/dist/styles.css`
 
 Do not include plugin-local sync state or credentials in any release artifact.
 

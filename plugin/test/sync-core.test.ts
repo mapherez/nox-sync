@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   SyncButtonState,
   classifyBackendError,
+  isFolderAlreadyExistsError,
   isHiddenPath,
   isMarkdownPath,
   isNoxSyncTrashPath,
@@ -43,6 +44,15 @@ test("syncActionProgress clamps file action progress into the action range", () 
   assert.equal(syncActionProgress(4, 4), 90);
   assert.equal(syncActionProgress(10, 4), 90);
   assert.equal(syncActionProgress(0, 0), 80);
+});
+
+test("isFolderAlreadyExistsError identifies Obsidian folder collisions", () => {
+  assert.equal(isFolderAlreadyExistsError(new Error("Folder already exists")), true);
+  assert.equal(isFolderAlreadyExistsError(new Error("folder already exists: .nox-sync-trash")), true);
+  assert.equal(isFolderAlreadyExistsError("Folder already exists"), true);
+  assert.equal(isFolderAlreadyExistsError({ message: "Folder already exists" }), true);
+  assert.equal(isFolderAlreadyExistsError(new Error("File already exists")), false);
+  assert.equal(isFolderAlreadyExistsError({ message: 409 }), false);
 });
 
 test("classifyBackendError maps backend errors to plugin states", () => {

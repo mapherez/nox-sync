@@ -178,3 +178,18 @@ export function syncActionProgress(completed: number, total: number): number {
   }
   return 30 + (Math.max(0, Math.min(total, completed)) / total) * 60;
 }
+
+export function isFolderAlreadyExistsError(error: unknown): boolean {
+  let message = "";
+  if (error instanceof Error) {
+    message = error.message;
+  } else if (typeof error === "string") {
+    message = error;
+  } else if (typeof error === "object" && error !== null && "message" in error) {
+    const value = error.message;
+    if (typeof value === "string") {
+      message = value;
+    }
+  }
+  return /folder already exists/i.test(message);
+}

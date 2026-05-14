@@ -3,6 +3,7 @@ import {
   NOX_SYNC_TRASH_ROOT,
   SyncButtonState,
   classifyBackendError,
+  isFolderAlreadyExistsError,
   isHiddenPath,
   isMarkdownPath,
   isNoxSyncTrashPath,
@@ -1266,7 +1267,13 @@ export default class NoxSyncPlugin extends Plugin {
         }
         continue;
       }
-      await this.app.vault.createFolder(current);
+      try {
+        await this.app.vault.createFolder(current);
+      } catch (error) {
+        if (!isFolderAlreadyExistsError(error)) {
+          throw error;
+        }
+      }
     }
   }
 
