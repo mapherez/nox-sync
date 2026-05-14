@@ -11,7 +11,7 @@ The product rules and implementation milestones live in `SPECS/`.
 
 ## Current State
 
-This repository is at Milestone 7 reliability hardening:
+This repository is at Milestone 8 release readiness:
 
 - backend skeleton
 - plugin skeleton
@@ -57,10 +57,14 @@ This repository is at Milestone 7 reliability hardening:
 - plugin error mapping for stale sessions, missing sessions, hash mismatches, remote locks, and safe retry from `ERROR`
 - lightweight plugin test harness for path normalization, exclusions, progress math, and backend error classification
 - Docker scaffolding
+- production-oriented Docker Compose example
+- local development Docker Compose workflow
+- backend configuration, user setup, troubleshooting, and release checklist docs
+- CI workflow for backend tests, Go formatting, plugin typecheck/tests/build, and Docker image build
 - fixture vaults
 - naming conventions
 
-The first non-conflicting plugin sync path, user-facing conflict resolution, and the reliability hardening pass are implemented. Later milestones focus on release readiness.
+The first non-conflicting plugin sync path, user-facing conflict resolution, reliability hardening pass, and initial release-readiness scaffolding are implemented. Remaining release work is focused on publishing artifacts and validating the setup path against real installs.
 
 ## Development
 
@@ -84,5 +88,20 @@ npm run test
 Local backend with Docker Compose:
 
 ```bash
-docker compose up --build
+docker compose -f docker-compose.dev.yml up --build
 ```
+
+Production-style backend Compose:
+
+```bash
+docker compose up -d
+```
+
+## Documentation
+
+- [API contract](docs/api-contract.md)
+- [Backend configuration](docs/backend-configuration.md)
+- [User setup guide](docs/user-setup.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Release checklist](docs/release-checklist.md)
+- [Naming conventions](docs/naming-conventions.md)
