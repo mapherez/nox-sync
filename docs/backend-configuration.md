@@ -43,18 +43,18 @@ docker compose -f docker-compose.dev.yml up --build
 
 This builds `./backend` locally and mounts `./data` to `/data` for easy inspection while developing.
 
-## Docker Image Build
+## Local Docker Image Build
 
-To build the backend image locally:
+To build the backend image from a source checkout:
 
 ```bash
 docker build -t nox-sync:dev ./backend
 ```
 
-For a release image:
+You can then run that local image with:
 
 ```bash
-docker build -t ghcr.io/mapherez/nox-sync:latest ./backend
+docker run --rm --name nox-sync-dev -p 8080:8080 -v nox-sync-dev-data:/data nox-sync:dev
 ```
 
-Publishing that image is the only release step that depends on the chosen container registry. Running NoX Sync does not require external databases, external sync providers, or user accounts.
+The `ghcr.io/mapherez/nox-sync:latest` tag is the published image used by the production Compose example. Building a local image does not publish anything to GitHub Container Registry. Running NoX Sync does not require external databases, external sync providers, or user accounts.
