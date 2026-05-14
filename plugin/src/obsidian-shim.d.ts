@@ -25,6 +25,10 @@ declare module "obsidian" {
     };
   }
 
+  export class TFolder extends TAbstractFile {
+    children: TAbstractFile[];
+  }
+
   export interface EventRef {}
 
   export interface Vault {
@@ -34,6 +38,7 @@ declare module "obsidian" {
     readBinary(file: TFile): Promise<ArrayBuffer>;
     createBinary(path: string, data: ArrayBuffer): Promise<TFile>;
     createFolder(path: string): Promise<void>;
+    delete(file: TAbstractFile, force?: boolean): Promise<void>;
     rename(file: TAbstractFile, newPath: string): Promise<void>;
     on(name: "create", callback: (file: TAbstractFile) => unknown): EventRef;
     on(name: "modify", callback: (file: TFile) => unknown): EventRef;

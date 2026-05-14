@@ -11,6 +11,7 @@ import {
   isPluginInternalPath,
   normalizeRequiredPath,
   normalizeVaultPath,
+  parentPathsDeepestFirst,
   syncActionProgress,
 } from "../src/sync-core";
 
@@ -44,6 +45,12 @@ test("syncActionProgress clamps file action progress into the action range", () 
   assert.equal(syncActionProgress(4, 4), 90);
   assert.equal(syncActionProgress(10, 4), 90);
   assert.equal(syncActionProgress(0, 0), 80);
+});
+
+test("parentPathsDeepestFirst returns removable parents from leaf to root", () => {
+  assert.deepEqual(parentPathsDeepestFirst("Folder/Subfolder/note.md"), ["Folder/Subfolder", "Folder"]);
+  assert.deepEqual(parentPathsDeepestFirst("note.md"), []);
+  assert.deepEqual(parentPathsDeepestFirst("../outside.md"), []);
 });
 
 test("isFolderAlreadyExistsError identifies Obsidian folder collisions", () => {

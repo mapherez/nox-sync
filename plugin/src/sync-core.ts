@@ -179,6 +179,24 @@ export function syncActionProgress(completed: number, total: number): number {
   return 30 + (Math.max(0, Math.min(total, completed)) / total) * 60;
 }
 
+export function parentPathsDeepestFirst(path: string): string[] {
+  const normalized = normalizeVaultPath(path);
+  if (!normalized) {
+    return [];
+  }
+
+  const parts = normalized.split("/");
+  parts.pop();
+
+  const parents: string[] = [];
+  while (parts.length > 0) {
+    parents.push(parts.join("/"));
+    parts.pop();
+  }
+
+  return parents;
+}
+
 export function isFolderAlreadyExistsError(error: unknown): boolean {
   let message = "";
   if (error instanceof Error) {

@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, requestUrl, setIcon } from "obsidian";
+import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, requestUrl, setIcon } from "obsidian";
 import {
   NOX_SYNC_TRASH_ROOT,
   SyncButtonState,
@@ -10,6 +10,7 @@ import {
   isPluginInternalPath,
   normalizeRequiredPath,
   normalizeVaultPath,
+  parentPathsDeepestFirst,
   syncActionProgress,
 } from "./sync-core";
 
@@ -681,6 +682,7 @@ export default class NoxSyncPlugin extends Plugin {
 
     if (currentFile) {
       await this.moveFileToSyncTrash(currentFile);
+      await this.pruneEmptyParentFolders(path);
     }
   }
 
@@ -985,6 +987,7 @@ export default class NoxSyncPlugin extends Plugin {
     }
 
     if (detail.remoteDeleted) {
+      await this.pruneEmptyParentFolders(path);
       delete this.settings.knownFileHashes[path];
       delete this.settings.knownFileRevisions[path];
       this.settings.pendingDeletedPaths = this.settings.pendingDeletedPaths.filter((deletedPath) => deletedPath !== path);
@@ -1281,6 +1284,27 @@ export default class NoxSyncPlugin extends Plugin {
     const trashPath = this.nextSyncTrashPath(file.path);
     await this.ensureParentFolders(trashPath);
     await this.app.vault.rename(file, trashPath);
+  }
+
+  private async pruneEmptyParentFolders(path: string): Promise<void> {
+    for (const folderPath of parentPathsDeepestFirst(path)) {
+      if (isPluginInternalPath(folderPath) || isNoxSyncTrashPath(folderPath)) {
+        return;
+      }
+
+      const folder = this.app.vault.getAbstractFileByPath(folderPath);
+      if (!folder) {
+        continue;
+      }
+      if (!(folder instanceof TFolder)) {
+        return;
+      }
+      if (folder.children.length > 0) {
+        return;
+      }
+
+      await this.app.vault.delete(folder, false);
+    }
   }
 
   private nextSyncTrashPath(path: string): string {
