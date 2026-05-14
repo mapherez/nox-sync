@@ -1,70 +1,87 @@
 # NoX Sync
 
-NoX Sync is a private, self-hosted, manually triggered sync system for Obsidian vaults.
+NoX Sync is a private, self-hosted sync system for Obsidian vaults. It is designed for people who want a simple backend they control, a reusable API key, and explicit manual sync instead of background cloud synchronization.
 
-The project is intentionally split into two parts:
+The project has two parts:
 
-- `backend/` - Go backend, SQLite metadata, local filesystem blob storage, HTTP + JSON API, SSE status updates.
-- `plugin/` - TypeScript Obsidian plugin using the Obsidian Plugin API, ribbon button, settings tab, and manual sync command.
+- `backend/` - Go HTTP service with SQLite metadata, local filesystem blob storage, and Docker support.
+- `plugin/` - Obsidian plugin written in TypeScript using the Obsidian API, HTML, and CSS.
 
-The product rules and implementation milestones live in `SPECS/`.
+NoX Sync does not use external databases, external sync providers, user accounts, realtime collaboration services, or automatic background sync.
 
-## Current State
+## Features
 
-This repository is at Milestone 8 release readiness:
+- Manual sync from the Obsidian ribbon button or `NoX Sync: Sync vault` command.
+- Self-hosted backend with persistent `/data` storage.
+- Reusable `noxsync_` API key shown on a local admin page.
+- HTTP + JSON API under `/v1`.
+- Server-sent events for backend status updates.
+- Backend-enforced single sync lock with heartbeat and stale-lock recovery.
+- Manifest-based planning for uploads, downloads, deletes, conflicts, and no-op actions.
+- SHA-256 validation for uploads and downloads.
+- Staged upload and commit flow so interrupted syncs do not change current remote state.
+- Content-addressed local blob storage.
+- Current and previous backend file versions plus tombstones for deletes.
+- Explicit Markdown and binary conflict handling.
+- Safe local replacement/delete behavior through `.nox-sync-trash/`.
+- Plugin-local settings, credentials, sync state, and trash excluded from sync.
 
-- backend skeleton
-- plugin skeleton
-- initial API contract
-- SQLite migration wiring
-- persistent backend `/data` layout
-- generated reusable `noxsync_` API key
-- admin page with Server URL/API key display and key rotation
-- health, auth check, status, and SSE status endpoints
-- backend sync lock begin, heartbeat, stale lock handling, commit, and abort
-- manifest planning with upload, download, delete, conflict, and no-op actions
-- staged upload SHA-256 validation
-- content-addressed blob promotion on commit
-- current/previous backend file metadata and tombstones
-- plugin settings for Server URL, API key, client name, Vault ID, and Test connection
-- generated local plugin client ID and vault ID
-- Obsidian ribbon sync button and `NoX Sync: Sync vault` command
-- plugin button state machine for backend/auth/reachability/sync-lock states
-- official plugin button colors, opacity values, icons, and progress ring
-- plugin SSE status stream handling with explicit status-check fallback
-- local vault manifest scanner with normalized paths, SHA-256 hashes, sizes, deletes, and last-known revisions
-- plugin-local settings, credentials, and sync state excluded from the manifest
-- local dirty detection from Obsidian create, modify, delete, and rename events
-- full local manifest scan before manual sync/status correction
-- remote/local dirty state derivation from backend revision plus local pending state
-- Sync hidden files setting, with NoX Sync plugin data still excluded
-- plugin manual sync begin, manifest submission, plan execution, commit, and abort-on-failure flow
-- plugin upload execution for planned local changes
-- plugin remote download execution with SHA-256 verification before writing
-- safe local replacement/delete handling through an excluded `.nox-sync-trash/` folder
-- plugin sync state updates only after successful backend commit
-- backend planner handling for remote-only edits and remote deletes against unchanged local files
-- conflict details persisted in plugin-local state when the backend returns conflict actions
-- conflict resolver modal opened from the `CONFLICT` ribbon state
-- Markdown conflict comparison with keep local, keep remote, keep both, and manual merge choices
-- binary/non-Markdown conflict handling with keep local, keep remote, and keep both choices
-- syncable conflict copy naming using `filename.sync-conflict.<client-name>.<date>.ext`
-- explicit resolved delete/upload planner paths so user conflict choices do not loop back into conflict
-- plugin sync heartbeat while a manual sync is in progress
-- `SYNCING_LOCAL` progress tooltip/ring updates through scan, planning, file actions, and commit
-- stale backend sync locks clean up abandoned staging directories when reaped
-- backend failure-path tests for unsafe commits, conflict commits, ownership checks, hash mismatches, and restart stale-lock recovery
-- plugin error mapping for stale sessions, missing sessions, hash mismatches, remote locks, and safe retry from `ERROR`
-- lightweight plugin test harness for path normalization, exclusions, progress math, and backend error classification
-- Docker scaffolding
-- production-oriented Docker Compose example
-- local development Docker Compose workflow
-- backend configuration, user setup, troubleshooting, and release checklist docs
-- CI workflow for backend tests, Go formatting, plugin typecheck/tests/build, and Docker image build
-- fixture vaults
-- naming conventions
+## Quick Start
 
-The first non-conflicting plugin sync path, user-facing conflict resolution, reliability hardening pass, and initial release-readiness scaffolding are implemented. Remaining release work is focused on publishing artifacts and validating the setup path against real installs.
+Start the backend with Docker Compose:
+
+```bash
+docker compose up -d
+```
+
+Open the admin page:
+
+```text
+http://localhost:8080/
+```
+
+Copy the Server URL and API key into the NoX Sync plugin settings in Obsidian, then use **Test connection**.
+
+For the full first-run flow, see [User setup guide](docs/user-setup.md).
+
+## Plugin Install
+
+Build the plugin from source:
+
+```bash
+cd plugin
+npm install
+npm run build
+```
+
+The installable plugin files are written to `plugin/dist/`:
+
+```text
+main.js
+manifest.json
+styles.css
+```
+
+Copy those files into:
+
+```text
+<vault>/.obsidian/plugins/nox-sync/
+```
+
+Then enable NoX Sync from Obsidian's Community Plugins settings.
+
+## Backend Data
+
+The backend stores all persistent state under `/data`:
+
+- `/data/nox-sync.db`
+- `/data/blobs`
+- `/data/staging`
+- `/data/logs`
+
+Back up the whole `/data` directory as one unit. Restoring only the database or only the blobs can leave metadata and file content out of sync.
+
+See [Backend configuration](docs/backend-configuration.md) for environment variables and Docker details.
 
 ## Development
 
@@ -81,27 +98,48 @@ Plugin:
 ```bash
 cd plugin
 npm install
-npm run build
+npm run typecheck
 npm run test
+npm run build
 ```
 
-Local backend with Docker Compose:
+Local development backend:
 
 ```bash
 docker compose -f docker-compose.dev.yml up --build
 ```
 
-Production-style backend Compose:
+## Release
 
-```bash
-docker compose up -d
+Backend releases are Docker images. The production Compose example uses:
+
+```text
+ghcr.io/mapherez/nox-sync:latest
 ```
+
+Plugin releases should attach these files as GitHub release assets:
+
+```text
+main.js
+manifest.json
+styles.css
+```
+
+The release tag should match the version in `plugin/manifest.json`.
+
+See [Release checklist](docs/release-checklist.md) for the full release flow.
 
 ## Documentation
 
-- [API contract](docs/api-contract.md)
-- [Backend configuration](docs/backend-configuration.md)
 - [User setup guide](docs/user-setup.md)
+- [Backend configuration](docs/backend-configuration.md)
 - [Troubleshooting](docs/troubleshooting.md)
-- [Release checklist](docs/release-checklist.md)
+- [API contract](docs/api-contract.md)
 - [Naming conventions](docs/naming-conventions.md)
+- [Release checklist](docs/release-checklist.md)
+- [Project specs](SPECS/1-project-description.md)
+- [Official stack](SPECS/2-official-stack.md)
+
+## Safety Model
+
+NoX Sync treats the backend as the authority for sync locks, sessions, remote state, and commits. Files are not considered synced until content hashes are verified and the backend commit succeeds. Conflicts are explicit, and normal sync does not silently overwrite local or remote changes.
