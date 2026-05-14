@@ -8,9 +8,10 @@
     "build": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
     "test": "node esbuild.test.mjs && node --test .test-dist/sync-core.test.cjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p test/tsconfig.json"
   },
   "devDependencies": {
+    "@types/node": "^22.19.19",
     "esbuild": "^0.28.0",
     "typescript": "^5.4.5"
   }
