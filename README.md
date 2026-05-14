@@ -127,18 +127,11 @@ styles.css
 
 The release tag should match the version in `plugin/manifest.json`.
 
-See [Release checklist](docs/release-checklist.md) for the full release flow.
-
 ## Documentation
 
 - [User setup guide](docs/user-setup.md)
 - [Backend configuration](docs/backend-configuration.md)
 - [Troubleshooting](docs/troubleshooting.md)
-- [API contract](docs/api-contract.md)
-- [Naming conventions](docs/naming-conventions.md)
-- [Release checklist](docs/release-checklist.md)
-- [Project specs](SPECS/1-project-description.md)
-- [Official stack](SPECS/2-official-stack.md)
 
 ## Safety Model
 
