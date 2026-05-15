@@ -222,3 +222,15 @@ The release tag should match the version in `plugin/manifest.json`.
 ## Safety Model
 
 NoX Sync treats the backend as the authority for users, vault ownership, sync locks, sessions, remote state, and commits. Files are not considered synced until content hashes are verified and the backend commit succeeds. Users cannot access each other's vaults, conflicts are explicit, and normal sync does not silently overwrite local or remote changes.
+
+## Obsidian Policy Disclosures
+
+NoX Sync is intended to be clear about the behaviors Obsidian asks plugin authors to disclose:
+
+- Account requirement: Full sync access requires an allowlisted Google account on the self-hosted backend. The plugin itself authenticates with the user's backend API key.
+- Network use: The plugin sends vault manifests, file content, sync status requests, and vault management requests only to the Server URL configured by the user. The backend dashboard uses Google OAuth for login. The optional support link opens Buy Me a Coffee only when clicked.
+- Payment: No payment is required for full access. The Buy Me a Coffee link is optional.
+- Telemetry: The plugin does not include client-side telemetry or analytics.
+- Ads: The plugin does not load dynamic ads. The settings page includes an optional static support link.
+- File access: The plugin uses Obsidian's vault APIs for files inside the currently opened vault, including `.nox-sync-trash/`. It does not access files outside the vault.
+- Updates: The plugin does not include a self-update mechanism. Updates are installed through Obsidian/GitHub release files.

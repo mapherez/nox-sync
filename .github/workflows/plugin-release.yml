@@ -43,9 +43,15 @@ jobs:
         run: |
           VERSION=$(node -p "require('./plugin/package.json').version")
           MANIFEST_VERSION=$(node -p "require('./plugin/manifest.json').version")
+          ROOT_MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
 
           if [ "$VERSION" != "$MANIFEST_VERSION" ]; then
             echo "package.json version ($VERSION) does not match manifest.json version ($MANIFEST_VERSION)"
+            exit 1
+          fi
+
+          if [ "$VERSION" != "$ROOT_MANIFEST_VERSION" ]; then
+            echo "package.json version ($VERSION) does not match root manifest.json version ($ROOT_MANIFEST_VERSION)"
             exit 1
           fi
 
