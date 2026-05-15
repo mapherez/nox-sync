@@ -16,6 +16,9 @@ NoX Sync does not use external databases, external sync providers, vault sharing
 - Google-authenticated `/vault-dashboard` with admin allowlist management.
 - One reusable `noxsync_` API key per active user.
 - Multiple remote vaults per user, selected from the Obsidian plugin settings.
+- Dashboard vault list with revision, updated time, cloud size, download, soft delete, restore, and permanent delete.
+- Plugin settings vault manager with create, select, delete, restore, permanent delete, and cloud size display.
+- Admin dashboard controls for adding, enabling, disabling, deleting, and promoting users.
 - HTTP + JSON API under `/v1`.
 - Server-sent events for backend status updates.
 - Backend-enforced per-vault sync lock with heartbeat and stale-lock recovery.
@@ -31,44 +34,66 @@ NoX Sync does not use external databases, external sync providers, vault sharing
 - Settings-page support link for donations.
 - Plugin-local settings, credentials, sync state, and trash excluded from sync.
 
-## Quick Start
+## Install From Release
 
-Set the required dashboard environment variables before starting the backend in production:
+This is the recommended path for normal use.
+
+### 1. Run The Backend
+
+The backend is published as a Docker image:
+
+```text
+ghcr.io/mapherez/nox-sync:latest
+```
+
+Download `docker-compose.yml` from this repository into an empty folder on your server, homelab, or Docker Desktop machine:
+
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/mapherez/nox-sync/master/docker-compose.yml -OutFile docker-compose.yml
+```
+
+Create a `.env` file in the same folder:
 
 ```bash
 NOX_SYNC_PUBLIC_URL=https://sync.example.com
-NOX_SYNC_GOOGLE_CLIENT_ID=...
-NOX_SYNC_GOOGLE_CLIENT_SECRET=...
+NOX_SYNC_GOOGLE_CLIENT_ID=your-google-client-id
+NOX_SYNC_GOOGLE_CLIENT_SECRET=your-google-client-secret
 NOX_SYNC_ADMIN_EMAILS=you@example.com
 ```
 
-Start the backend with Docker Compose:
+For local-only testing, `NOX_SYNC_PUBLIC_URL` can be:
+
+```bash
+NOX_SYNC_PUBLIC_URL=http://localhost:5710
+```
+
+Start the backend:
 
 ```bash
 docker compose up -d
 ```
 
-Open the dashboard:
+The Compose file maps host port `5710` to container port `8080`. Open the dashboard at:
 
 ```text
 http://localhost:5710/vault-dashboard
 ```
 
-Sign in with an allowlisted Google account. Copy the Server URL and API key into the NoX Sync plugin settings in Obsidian, use **Refresh vaults**, then select or create the backend vault to sync with.
+For a public domain, open:
 
-For the full first-run flow, see [User setup guide](docs/user-setup.md).
-
-## Plugin Install
-
-Build the plugin from source:
-
-```bash
-cd plugin
-npm install
-npm run build
+```text
+https://sync.example.com/vault-dashboard
 ```
 
-The installable plugin files are written to `plugin/dist/`:
+### 2. Install The Obsidian Plugin
+
+Download the plugin release assets from:
+
+```text
+https://github.com/mapherez/nox-sync/releases
+```
+
+You need these three files from the plugin release:
 
 ```text
 main.js
@@ -76,13 +101,48 @@ manifest.json
 styles.css
 ```
 
-Copy those files into:
+Create this folder inside each Obsidian vault where you want to use NoX Sync:
 
 ```text
 <vault>/.obsidian/plugins/nox-sync/
 ```
 
-Then enable NoX Sync from Obsidian's Community Plugins settings.
+Put the three release files in that folder, then enable NoX Sync from Obsidian's Community Plugins settings.
+
+### 3. Connect The Plugin
+
+In the backend dashboard:
+
+- Sign in with your allowlisted Google account.
+- Copy the Server URL.
+- Copy your API key.
+
+In Obsidian:
+
+- Open NoX Sync settings.
+- Paste the Server URL and API key.
+- Set a readable Client name, such as `Laptop` or `Desktop`.
+- Click **Test connection**.
+- Create or select a backend vault.
+- Use the ribbon button to manually sync.
+
+For the full first-run flow, see [User setup guide](docs/user-setup.md).
+
+## Google OAuth
+
+The dashboard uses Google login. Create a Google OAuth web client and add this authorized redirect URI:
+
+```text
+https://sync.example.com/auth/google/callback
+```
+
+For local testing with the default Compose port, use:
+
+```text
+http://localhost:5710/auth/google/callback
+```
+
+`NOX_SYNC_PUBLIC_URL` must match the public origin you use in the browser. Do not include a trailing slash.
 
 ## Backend Data
 
@@ -93,11 +153,15 @@ The backend stores all persistent state under `/data`:
 - `/data/staging`
 - `/data/logs`
 
-Back up the whole `/data` directory as one unit. Restoring only the database or only the blobs can leave metadata and file content out of sync. The `multi-vault` schema is a breaking change from `0.1.0`; old single-vault data is not automatically migrated.
+Back up the whole `/data` directory as one unit. Restoring only the database or only the blobs can leave metadata and file content out of sync.
+
+Soft-deleted vaults can be restored from the dashboard or plugin. Permanently deleting a vault removes its metadata and cleans up unreferenced finalized blobs where safe.
 
 See [Backend configuration](docs/backend-configuration.md) for environment variables and Docker details.
 
-## Development
+## Build From Source
+
+Use this path if you want to modify the code or build everything locally.
 
 Backend:
 
@@ -117,13 +181,21 @@ npm run test
 npm run build
 ```
 
-Local development backend:
+The installable plugin files are written to `plugin/dist/`:
+
+```text
+main.js
+manifest.json
+styles.css
+```
+
+Local development backend with Docker:
 
 ```bash
 docker compose -f docker-compose.dev.yml up --build
 ```
 
-## Release
+## Release Notes
 
 Backend releases are Docker images. The production Compose example uses:
 
