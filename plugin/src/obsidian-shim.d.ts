@@ -1,6 +1,7 @@
 declare module "obsidian" {
   export class App {
     vault: Vault;
+    fileManager: FileManager;
     setting: AppSetting;
   }
 
@@ -13,7 +14,6 @@ declare module "obsidian" {
     addCommand(command: {
       id: string;
       name: string;
-      hotkeys?: Array<{ modifiers: string[]; key: string }>;
       callback: () => unknown;
     }): void;
     addSettingTab(tab: PluginSettingTab): void;
@@ -45,7 +45,7 @@ declare module "obsidian" {
     children: TAbstractFile[];
   }
 
-  export interface EventRef {}
+  export type EventRef = object;
 
   export interface Vault {
     adapter: DataAdapter;
@@ -61,6 +61,10 @@ declare module "obsidian" {
     on(name: "modify", callback: (file: TFile) => unknown): EventRef;
     on(name: "delete", callback: (file: TAbstractFile) => unknown): EventRef;
     on(name: "rename", callback: (file: TAbstractFile, oldPath: string) => unknown): EventRef;
+  }
+
+  export interface FileManager {
+    trashFile(file: TAbstractFile): Promise<void>;
   }
 
   export interface DataAdapter {
@@ -102,9 +106,12 @@ declare module "obsidian" {
   }
 
   export class Setting {
+    settingEl: HTMLElement;
+    controlEl: HTMLElement;
     constructor(containerEl: HTMLElement);
     setName(name: string): this;
     setDesc(desc: string): this;
+    setHeading(): this;
     addText(callback: (component: TextComponent) => unknown): this;
     addDropdown(callback: (component: DropdownComponent) => unknown): this;
     addToggle(callback: (component: ToggleComponent) => unknown): this;

@@ -246,7 +246,6 @@ export default class NoxSyncPlugin extends Plugin {
     this.addCommand({
       id: "sync-vault",
       name: "Sync vault",
-      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "S" }],
       callback: () => {
         void this.handleManualSync();
       },
@@ -1630,7 +1629,7 @@ export default class NoxSyncPlugin extends Plugin {
         return;
       }
 
-      await this.app.vault.delete(folder, false);
+      await this.app.fileManager.trashFile(folder);
     }
   }
 
@@ -2306,9 +2305,9 @@ class NoxSyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    const header = containerEl.createEl("div", { cls: "nox-sync-settings-header" });
-    header.createEl("h2", { text: "NoX Sync" });
-    const donateLink = header.createEl("a", { cls: "nox-sync-donate-button" });
+    const header = new Setting(containerEl).setName("NoX Sync").setHeading();
+    header.settingEl.addClass("nox-sync-settings-header");
+    const donateLink = header.controlEl.createEl("a", { cls: "nox-sync-donate-button" });
     donateLink.href = "https://www.buymeacoffee.com/mapherez";
     donateLink.target = "_blank";
     donateLink.rel = "noopener noreferrer";
@@ -2415,15 +2414,13 @@ class NoxSyncSettingTab extends PluginSettingTab {
 
   private renderBackendVaultManager(containerEl: HTMLElement): void {
     const section = containerEl.createEl("div", { cls: "nox-sync-vault-manager" });
-    const header = section.createEl("div", { cls: "nox-sync-vault-manager-header" });
-    const title = header.createEl("div");
-    title.createEl("h3", { text: "Backend vault" });
-    title.createEl("p", {
-      text: "Remote vault on this backend for the currently opened Obsidian vault.",
-      cls: "setting-item-description",
-    });
+    const header = new Setting(section)
+      .setName("Backend vault")
+      .setDesc("Remote vault on this backend for the currently opened Obsidian vault.")
+      .setHeading();
+    header.settingEl.addClass("nox-sync-vault-manager-header");
 
-    const actions = header.createEl("div", { cls: "nox-sync-vault-manager-actions" });
+    const actions = header.controlEl.createEl("div", { cls: "nox-sync-vault-manager-actions" });
     const refreshButton = actions.createEl("button", { cls: "clickable-icon nox-sync-icon-button" });
     refreshButton.type = "button";
     refreshButton.setAttr("aria-label", "Refresh vaults");
@@ -2585,7 +2582,7 @@ function isDisabledState(state: SyncButtonState): boolean {
 }
 
 function randomId(): string {
-  const webCrypto = globalThis.crypto;
+  const webCrypto = window.crypto;
 
   if (webCrypto) {
     if (typeof webCrypto.randomUUID === "function") {
@@ -2601,7 +2598,7 @@ function randomId(): string {
 }
 
 async function sha256Hex(content: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", content);
+  const digest = await window.crypto.subtle.digest("SHA-256", content);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
