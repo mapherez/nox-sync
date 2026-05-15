@@ -6,6 +6,16 @@ on:
   push:
     branches:
       - master
+    paths:
+      - "backend/**"
+      - "plugin/**"
+      - ".github/workflows/ci.yml"
+      - "docker-compose.yml"
+      - "docker-compose.dev.yml"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend:

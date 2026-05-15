@@ -1,0 +1,61 @@
+name: Release Obsidian plugin
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release plugin
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: plugin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugin/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Read plugin version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=plugin-v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create plugin zip
+        run: |
+          mkdir -p ../release
+          cd dist
+          zip -r ../../release/nox-sync-plugin-v${{ steps.version.outputs.version }}.zip main.js manifest.json styles.css
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "../release/nox-sync-plugin-v${{ steps.version.outputs.version }}.zip" \
+            --title "NoX Sync Plugin v${{ steps.version.outputs.version }}" \
+            --notes "Manual release for the NoX Sync Obsidian plugin."
