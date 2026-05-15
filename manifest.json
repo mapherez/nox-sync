@@ -3,7 +3,7 @@
   "name": "NoX Sync",
   "version": "0.1.0",
   "minAppVersion": "1.11.0",
-  "description": "Manual self-hosted sync for Obsidian vaults. Requires a user-run NoX Sync backend.",
+  "description": "Manual self-hosted sync for your vaults. Requires a user-run NoX Sync backend.",
   "author": "Mapherez",
   "authorUrl": "https://github.com/mapherez",
   "fundingUrl": "https://www.buymeacoffee.com/mapherez",
