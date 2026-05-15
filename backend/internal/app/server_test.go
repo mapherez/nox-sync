@@ -11,7 +11,7 @@ import (
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	server, _ := newTestServer(t)
+	server, _, _, _ := newTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
 	res := httptest.NewRecorder()
@@ -27,7 +27,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestStatusEndpointRequiresAuth(t *testing.T) {
-	server, _ := newTestServer(t)
+	server, _, _, _ := newTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
 	res := httptest.NewRecorder()
@@ -40,13 +40,13 @@ func TestStatusEndpointRequiresAuth(t *testing.T) {
 }
 
 func TestStatusEndpointAcceptsActiveAPIKey(t *testing.T) {
-	server, store := newTestServer(t)
-	apiKey, err := store.CurrentAPIKey(context.Background())
+	server, store, user, vault := newTestServer(t)
+	apiKey, err := store.CurrentAPIKey(context.Background(), user.ID)
 	if err != nil {
 		t.Fatalf("load api key: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/status?vaultId="+vault.ID, nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	res := httptest.NewRecorder()
 
@@ -58,14 +58,19 @@ func TestStatusEndpointAcceptsActiveAPIKey(t *testing.T) {
 }
 
 func TestAdminPageShowsReusableAPIKey(t *testing.T) {
-	server, store := newTestServer(t)
-	apiKey, err := store.CurrentAPIKey(context.Background())
+	server, store, user, _ := newTestServer(t)
+	apiKey, err := store.CurrentAPIKey(context.Background(), user.ID)
 	if err != nil {
 		t.Fatalf("load api key: %v", err)
 	}
+	sessionToken, err := store.CreateWebSession(context.Background(), user.ID, webSessionDuration)
+	if err != nil {
+		t.Fatalf("create web session: %v", err)
+	}
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/vault-dashboard", nil)
 	req.Host = "localhost:8080"
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionToken})
 	res := httptest.NewRecorder()
 
 	server.Routes().ServeHTTP(res, req)
@@ -74,18 +79,23 @@ func TestAdminPageShowsReusableAPIKey(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, res.Code)
 	}
 	if !strings.Contains(res.Body.String(), apiKey) {
-		t.Fatalf("expected admin page to include active api key")
+		t.Fatalf("expected dashboard to include active api key")
 	}
 }
 
 func TestRotateAPIKeyInvalidatesPreviousKey(t *testing.T) {
-	server, store := newTestServer(t)
-	oldKey, err := store.CurrentAPIKey(context.Background())
+	server, store, user, _ := newTestServer(t)
+	oldKey, err := store.CurrentAPIKey(context.Background(), user.ID)
 	if err != nil {
 		t.Fatalf("load old api key: %v", err)
 	}
+	sessionToken, err := store.CreateWebSession(context.Background(), user.ID, webSessionDuration)
+	if err != nil {
+		t.Fatalf("create web session: %v", err)
+	}
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api-key/rotate", nil)
+	req := httptest.NewRequest(http.MethodPost, "/vault-dashboard/api-key/rotate", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionToken})
 	res := httptest.NewRecorder()
 
 	server.Routes().ServeHTTP(res, req)
@@ -94,7 +104,7 @@ func TestRotateAPIKeyInvalidatesPreviousKey(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusSeeOther, res.Code)
 	}
 
-	newKey, err := store.CurrentAPIKey(context.Background())
+	newKey, err := store.CurrentAPIKey(context.Background(), user.ID)
 	if err != nil {
 		t.Fatalf("load new api key: %v", err)
 	}
@@ -119,7 +129,7 @@ func TestRotateAPIKeyInvalidatesPreviousKey(t *testing.T) {
 	}
 }
 
-func newTestServer(t *testing.T) (*Server, *storage.Store) {
+func newTestServer(t *testing.T) (*Server, *storage.Store, storage.User, storage.Vault) {
 	t.Helper()
 
 	store, err := storage.Open(context.Background(), t.TempDir())
@@ -132,5 +142,14 @@ func newTestServer(t *testing.T) (*Server, *storage.Store) {
 		}
 	})
 
-	return NewServer(Config{Version: "test"}, store), store
+	user, err := store.UpsertAllowedUser(context.Background(), "test@example.com", storage.UserRoleAdmin)
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	vault, err := store.CreateVault(context.Background(), user.ID, "Test Vault")
+	if err != nil {
+		t.Fatalf("seed vault: %v", err)
+	}
+
+	return NewServer(Config{Version: "test"}, store), store, user, vault
 }

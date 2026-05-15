@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/mapherez/nox-sync/backend/internal/storage"
 )
+
+const sessionCookieName = "nox_sync_session"
 
 // Server owns HTTP routing for the backend.
 type Server struct {
@@ -31,10 +32,20 @@ func NewServer(cfg Config, store *storage.Store) *Server {
 // Routes returns the backend HTTP handler.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleAdmin)
-	mux.HandleFunc("/admin/api-key/rotate", s.handleRotateAPIKey)
+	mux.HandleFunc("/", s.handleRoot)
+	mux.HandleFunc("/vault-dashboard", s.handleDashboard)
+	mux.HandleFunc("/vault-dashboard/api-key/rotate", s.handleRotateAPIKey)
+	mux.HandleFunc("/vault-dashboard/users/add", s.handleAddUser)
+	mux.HandleFunc("/vault-dashboard/users/status", s.handleSetUserStatus)
+	mux.HandleFunc("/vault-dashboard/users/role", s.handleSetUserRole)
+	mux.HandleFunc("/vault-dashboard/vaults/delete", s.handleDeleteVault)
+	mux.HandleFunc("/vault-dashboard/vaults/download", s.handleDownloadVaultZip)
+	mux.HandleFunc("/auth/google/start", s.handleGoogleStart)
+	mux.HandleFunc("/auth/google/callback", s.handleGoogleCallback)
+	mux.HandleFunc("/auth/logout", s.handleLogout)
 	mux.HandleFunc("/v1/health", s.handleHealth)
 	mux.HandleFunc("/v1/auth/check", s.handleAuthCheck)
+	mux.HandleFunc("/v1/vaults", s.handlePluginVaults)
 	mux.HandleFunc("/v1/status", s.handleStatus)
 	mux.HandleFunc("/v1/sync/events", s.handleSyncEvents)
 	mux.HandleFunc("/v1/sync/begin", s.handleBeginSync)
@@ -47,48 +58,12 @@ func (s *Server) Routes() http.Handler {
 	return mux
 }
 
-func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
-
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		writeJSONError(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "Method not allowed.")
-		return
-	}
-
-	apiKey, err := s.store.CurrentAPIKey(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to load API key.")
-		return
-	}
-
-	pageData := adminPageData{
-		ServerURL: serverURL(r),
-		APIKey:    apiKey,
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := adminTemplate.Execute(w, pageData); err != nil {
-		return
-	}
-}
-
-func (s *Server) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		writeJSONError(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "Method not allowed.")
-		return
-	}
-
-	if _, err := s.store.RotateAPIKey(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to generate a new API key.")
-		return
-	}
-
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/vault-dashboard", http.StatusSeeOther)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -107,13 +82,48 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.requireAuth(w, r) {
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true,
+		"ok":    true,
+		"user":  user.Email,
+		"role":  user.Role,
+		"vault": "selected-in-settings",
 	})
+}
+
+func (s *Server) handlePluginVaults(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		vaults, err := s.store.ListVaults(r.Context(), user.ID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, storage.VaultListResponse{Vaults: vaults})
+	case http.MethodPost:
+		var req storage.CreateVaultRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		vault, err := s.store.CreateVault(r.Context(), user.ID, req.Name)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, vault)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "Method not allowed.")
+	}
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -123,17 +133,22 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.requireAuth(w, r) {
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
+		return
+	}
+	vaultID, ok := vaultIDFromQuery(w, r)
+	if !ok {
 		return
 	}
 
-	payload, reaped, err := s.statusPayloadWithRefresh(r.Context())
+	payload, reaped, err := s.statusPayloadWithRefresh(r.Context(), user.ID, vaultID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to load status.")
+		writeStorageError(w, err)
 		return
 	}
 	if reaped {
-		s.events.broadcast(payload)
+		s.events.broadcast(vaultID, payload)
 	}
 
 	writeJSON(w, http.StatusOK, payload)
@@ -146,7 +161,12 @@ func (s *Server) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.requireAuth(w, r) {
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
+		return
+	}
+	vaultID, ok := vaultIDFromQuery(w, r)
+	if !ok {
 		return
 	}
 
@@ -154,7 +174,7 @@ func (s *Server) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	payload, reaped, err := s.statusPayloadWithRefresh(r.Context())
+	payload, reaped, err := s.statusPayloadWithRefresh(r.Context(), user.ID, vaultID)
 	if err != nil {
 		writeSSEError(w, "SERVER_ERROR", "Failed to load status.")
 		return
@@ -171,10 +191,10 @@ func (s *Server) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 	if reaped {
-		s.events.broadcast(payload)
+		s.events.broadcast(vaultID, payload)
 	}
 
-	events, unsubscribe := s.events.subscribe()
+	events, unsubscribe := s.events.subscribe(vaultID)
 	defer unsubscribe()
 
 	for {
@@ -190,23 +210,24 @@ func (s *Server) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) statusPayload(ctx context.Context) (map[string]any, error) {
-	payload, _, err := s.statusPayloadWithRefresh(ctx)
+func (s *Server) statusPayload(ctx context.Context, userID string, vaultID string) (map[string]any, error) {
+	payload, _, err := s.statusPayloadWithRefresh(ctx, userID, vaultID)
 	return payload, err
 }
 
-func (s *Server) statusPayloadWithRefresh(ctx context.Context) (map[string]any, bool, error) {
-	revision, err := s.store.ServerRevision(ctx)
+func (s *Server) statusPayloadWithRefresh(ctx context.Context, userID string, vaultID string) (map[string]any, bool, error) {
+	revision, err := s.store.ServerRevision(ctx, userID, vaultID)
 	if err != nil {
 		return nil, false, err
 	}
 
-	syncStatus, reaped, err := s.store.RefreshSyncStatus(ctx)
+	syncStatus, reaped, err := s.store.RefreshSyncStatus(ctx, userID, vaultID)
 	if err != nil {
 		return nil, false, err
 	}
 
 	return map[string]any{
+		"vaultId":        vaultID,
 		"serverRevision": revision,
 		"sync": map[string]any{
 			"state":      syncStatus.State,
@@ -227,39 +248,73 @@ func (s *Server) monitorStaleLocks(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.broadcastStaleLockIfNeeded(ctx)
+			s.broadcastStaleLocksIfNeeded(ctx)
 		}
 	}
 }
 
-func (s *Server) broadcastStaleLockIfNeeded(ctx context.Context) {
-	reaped, err := s.store.ReapExpiredLock(ctx)
-	if err != nil || !reaped {
+func (s *Server) broadcastStaleLocksIfNeeded(ctx context.Context) {
+	vaultIDs, err := s.store.ReapExpiredLocks(ctx)
+	if err != nil {
 		return
 	}
-
-	s.broadcastStatusContext(ctx)
+	for _, vaultID := range vaultIDs {
+		s.broadcastVaultStatusContext(ctx, vaultID)
+	}
 }
 
-func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
+func (s *Server) requireAPIUser(w http.ResponseWriter, r *http.Request) (storage.User, bool) {
 	token := authToken(r)
 	if token == "" {
 		writeJSONError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "NoX Sync API key is required.")
-		return false
+		return storage.User{}, false
 	}
 
-	valid, err := s.store.ValidateAPIKey(r.Context(), token)
+	user, valid, err := s.store.AuthenticateAPIKey(r.Context(), token)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to validate API key.")
-		return false
+		return storage.User{}, false
 	}
 
 	if !valid {
 		writeJSONError(w, http.StatusUnauthorized, "AUTH_FAILED", "Invalid NoX Sync API key.")
-		return false
+		return storage.User{}, false
 	}
 
-	return true
+	return user, true
+}
+
+func (s *Server) requireWebUser(w http.ResponseWriter, r *http.Request) (storage.User, bool) {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return storage.User{}, false
+	}
+	user, ok, err := s.store.UserBySessionToken(r.Context(), cookie.Value)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to load session.")
+		return storage.User{}, false
+	}
+	return user, ok
+}
+
+func (s *Server) requireAdminWebUser(w http.ResponseWriter, r *http.Request) (storage.User, bool) {
+	user, ok := s.requireWebUser(w, r)
+	if !ok {
+		http.Redirect(w, r, "/vault-dashboard", http.StatusSeeOther)
+		return storage.User{}, false
+	}
+	if user.Role != storage.UserRoleAdmin {
+		writeJSONError(w, http.StatusForbidden, "FORBIDDEN", "Admin access is required.")
+		return storage.User{}, false
+	}
+	return user, true
+}
+
+func (s *Server) publicURL(r *http.Request) string {
+	if strings.TrimSpace(s.cfg.PublicURL) != "" {
+		return strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/")
+	}
+	return serverURL(r)
 }
 
 func authToken(r *http.Request) string {
@@ -269,6 +324,35 @@ func authToken(r *http.Request) string {
 	}
 
 	return strings.TrimSpace(r.URL.Query().Get("api_key"))
+}
+
+func vaultIDFromQuery(w http.ResponseWriter, r *http.Request) (string, bool) {
+	vaultID := strings.TrimSpace(r.URL.Query().Get("vaultId"))
+	if vaultID == "" {
+		writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "vaultId is required.")
+		return "", false
+	}
+	return vaultID, true
+}
+
+func (s *Server) broadcastStatus(r *http.Request, userID string, vaultID string) {
+	s.broadcastStatusContext(r.Context(), userID, vaultID)
+}
+
+func (s *Server) broadcastStatusContext(ctx context.Context, userID string, vaultID string) {
+	payload, err := s.statusPayload(ctx, userID, vaultID)
+	if err != nil {
+		return
+	}
+	s.events.broadcast(vaultID, payload)
+}
+
+func (s *Server) broadcastVaultStatusContext(ctx context.Context, vaultID string) {
+	userID, err := s.store.VaultOwnerID(ctx, vaultID)
+	if err != nil {
+		return
+	}
+	s.broadcastStatusContext(ctx, userID, vaultID)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -317,152 +401,6 @@ func serverURL(r *http.Request) string {
 
 	return scheme + "://" + host
 }
-
-type adminPageData struct {
-	ServerURL string
-	APIKey    string
-}
-
-var adminTemplate = template.Must(template.New("admin").Parse(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NoX Sync</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-      --bg: #f9fafb;
-      --panel: #ffffff;
-      --text: #111827;
-      --muted: #4b5563;
-      --border: #d1d5db;
-      --button: #111827;
-      --button-text: #ffffff;
-      --danger: #ef4444;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #111827;
-        --panel: #1f2937;
-        --text: #f9fafb;
-        --muted: #d1d5db;
-        --border: #374151;
-        --button: #f9fafb;
-        --button-text: #111827;
-      }
-    }
-    * { box-sizing: border-box; }
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      margin: 0;
-      padding: 3rem 1rem;
-    }
-    main {
-      margin: 0 auto;
-      max-width: 44rem;
-    }
-    h1 {
-      font-size: 2rem;
-      letter-spacing: 0;
-      margin: 0 0 2rem;
-    }
-    .field {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      margin-bottom: 1rem;
-      padding: 1rem;
-    }
-    label {
-      color: var(--muted);
-      display: block;
-      font-size: 0.875rem;
-      margin-bottom: 0.5rem;
-    }
-    .copy-row {
-      display: flex;
-      gap: 0.5rem;
-    }
-    input {
-      background: transparent;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text);
-      flex: 1;
-      font: inherit;
-      min-width: 0;
-      padding: 0.65rem 0.75rem;
-    }
-    button {
-      background: var(--button);
-      border: 0;
-      border-radius: 6px;
-      color: var(--button-text);
-      cursor: pointer;
-      font: inherit;
-      padding: 0.65rem 0.85rem;
-      white-space: nowrap;
-    }
-    .danger {
-      background: var(--danger);
-      color: #ffffff;
-      margin-top: 0.5rem;
-    }
-    .note {
-      color: var(--muted);
-      font-size: 0.925rem;
-      line-height: 1.5;
-      margin-top: 1.5rem;
-    }
-    @media (max-width: 520px) {
-      body { padding-top: 1.5rem; }
-      .copy-row { flex-direction: column; }
-      button { width: 100%; }
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>NoX Sync</h1>
-
-    <section class="field">
-      <label for="server-url">Server URL</label>
-      <div class="copy-row">
-        <input id="server-url" readonly value="{{.ServerURL}}">
-        <button type="button" data-copy="server-url">Copy</button>
-      </div>
-    </section>
-
-    <section class="field">
-      <label for="api-key">API Key</label>
-      <div class="copy-row">
-        <input id="api-key" readonly value="{{.APIKey}}">
-        <button type="button" data-copy="api-key">Copy</button>
-      </div>
-      <form method="post" action="/admin/api-key/rotate">
-        <button class="danger" type="submit">Generate New API Key</button>
-      </form>
-    </section>
-
-    <p class="note">Generating a new API key invalidates the previous key. Existing Obsidian devices must be updated manually.</p>
-  </main>
-  <script>
-    document.querySelectorAll("[data-copy]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const input = document.getElementById(button.dataset.copy);
-        if (!input) return;
-        await navigator.clipboard.writeText(input.value);
-        const oldText = button.textContent;
-        button.textContent = "Copied";
-        window.setTimeout(() => { button.textContent = oldText; }, 1200);
-      });
-    });
-  </script>
-</body>
-</html>`))
 
 // Timestamp is kept here to make future status payloads use a consistent format.
 func timestamp(t time.Time) string {

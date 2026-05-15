@@ -1,16 +1,27 @@
 declare module "obsidian" {
   export class App {
     vault: Vault;
+    setting: AppSetting;
   }
 
   export class Plugin {
     app: App;
+    manifest: PluginManifest;
     loadData(): Promise<unknown>;
     saveData(data: unknown): Promise<void>;
     addRibbonIcon(icon: string, title: string, callback: (evt: MouseEvent) => unknown): HTMLElement;
     addCommand(command: { id: string; name: string; callback: () => unknown }): void;
     addSettingTab(tab: PluginSettingTab): void;
     registerEvent(eventRef: EventRef): void;
+  }
+
+  export interface AppSetting {
+    open(): void;
+    openTabById(id: string): void;
+  }
+
+  export interface PluginManifest {
+    id: string;
   }
 
   export class TAbstractFile {
@@ -32,6 +43,7 @@ declare module "obsidian" {
   export interface EventRef {}
 
   export interface Vault {
+    adapter: DataAdapter;
     getName(): string;
     getFiles(): TFile[];
     getAbstractFileByPath(path: string): TAbstractFile | null;
@@ -44,6 +56,26 @@ declare module "obsidian" {
     on(name: "modify", callback: (file: TFile) => unknown): EventRef;
     on(name: "delete", callback: (file: TAbstractFile) => unknown): EventRef;
     on(name: "rename", callback: (file: TAbstractFile, oldPath: string) => unknown): EventRef;
+  }
+
+  export interface DataAdapter {
+    exists(path: string, sensitive?: boolean): Promise<boolean>;
+    list(path: string): Promise<ListedFiles>;
+    stat(path: string): Promise<FileStat | null>;
+    remove(path: string): Promise<void>;
+    rmdir(path: string, recursive?: boolean): Promise<void>;
+  }
+
+  export interface ListedFiles {
+    files: string[];
+    folders: string[];
+  }
+
+  export interface FileStat {
+    ctime: number;
+    mtime: number;
+    size: number;
+    type: "file" | "folder";
   }
 
   export class PluginSettingTab {
@@ -69,6 +101,7 @@ declare module "obsidian" {
     setName(name: string): this;
     setDesc(desc: string): this;
     addText(callback: (component: TextComponent) => unknown): this;
+    addDropdown(callback: (component: DropdownComponent) => unknown): this;
     addToggle(callback: (component: ToggleComponent) => unknown): this;
     addButton(callback: (component: ButtonComponent) => unknown): this;
   }
@@ -82,8 +115,15 @@ declare module "obsidian" {
 
   export class ButtonComponent {
     setButtonText(text: string): this;
+    setIcon(icon: string): this;
     setCta(): this;
     onClick(callback: () => unknown): this;
+  }
+
+  export class DropdownComponent {
+    addOption(value: string, display: string): this;
+    setValue(value: string): this;
+    onChange(callback: (value: string) => unknown): this;
   }
 
   export class ToggleComponent {

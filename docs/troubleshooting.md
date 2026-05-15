@@ -6,7 +6,15 @@ NoX Sync surfaces explicit states instead of silently continuing when sync is un
 
 The plugin reached the backend, but the API key was missing or invalid.
 
-Check that the API key in plugin settings exactly matches the current key shown on the backend admin page. If you generated a new key, update every existing device manually.
+Check that the API key in plugin settings exactly matches the current key shown on the backend dashboard. If you generated a new key, update every existing device manually.
+
+In the multi-user backend, API keys are per user. Make sure the key belongs to the same Google user that owns the backend vault you are selecting.
+
+## Select Or Create Backend Vault
+
+The plugin reached the backend, but no remote vault is selected.
+
+Open NoX Sync settings, use **Refresh vaults**, then select a backend vault or create one from the current Obsidian vault name. If a previously selected vault was deleted from the dashboard, select a different vault before syncing again.
 
 ## `SERVER_UNREACHABLE`
 
@@ -28,9 +36,9 @@ Verify the Server URL in plugin settings, including protocol and port.
 
 ## `BLOCKED_REMOTE`
 
-Another sync session currently owns the backend sync lock.
+Another sync session currently owns the selected backend vault's sync lock.
 
-Wait for the other device to finish. If that device crashed or lost connectivity, the backend heartbeat timeout eventually marks the lock stale and unblocks future syncs.
+Wait for the other device to finish. If that device crashed or lost connectivity, the backend heartbeat timeout eventually marks that vault's lock stale and unblocks future syncs. Different backend vaults can sync at the same time.
 
 ## `CONFLICT`
 

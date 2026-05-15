@@ -10,22 +10,39 @@ From a folder containing `docker-compose.yml`:
 docker compose up -d
 ```
 
-The backend listens on port `8080` by default.
+The backend listens on port `8080` inside the container. The provided Compose files expose it on host port `5710`.
 
-## 2. Open The Admin Page
+For production, configure Google OAuth and at least one bootstrap admin email:
+
+```bash
+NOX_SYNC_PUBLIC_URL=https://sync.example.com
+NOX_SYNC_GOOGLE_CLIENT_ID=...
+NOX_SYNC_GOOGLE_CLIENT_SECRET=...
+NOX_SYNC_ADMIN_EMAILS=you@example.com
+```
+
+The Google OAuth redirect URL must be:
+
+```text
+https://sync.example.com/auth/google/callback
+```
+
+## 2. Open The Dashboard
 
 Open:
 
 ```text
-http://localhost:8080/
+http://localhost:5710/vault-dashboard
 ```
 
-Copy both values shown on the page:
+Sign in with an allowlisted Google account. The dashboard shows:
 
 - Server URL
-- API key
+- Your reusable API key
+- Your backend vaults
+- Admin user management, if your account is an admin
 
-The API key is reusable across your own Obsidian devices. Generating a new key invalidates the previous key, so existing devices must be updated manually.
+Each user has their own API key. Generating a new key invalidates only that user's previous key, so that user's existing Obsidian devices must be updated manually.
 
 ## 3. Build Or Install The Plugin
 
@@ -55,12 +72,13 @@ Then enable NoX Sync from Obsidian's Community Plugins settings.
 
 In Obsidian, open NoX Sync settings and set:
 
-- Server URL from the backend admin page.
-- API key from the backend admin page.
+- Server URL from the backend dashboard.
+- API key from the backend dashboard.
 - Client name, such as `Laptop` or `Desktop`.
-- Vault ID. Keep the same Vault ID for devices syncing the same vault.
 
-Use **Test connection** to verify the backend and API key.
+Use **Test connection** to verify the backend and API key. Then use **Refresh vaults** and either select an existing backend vault or create a backend vault from the current Obsidian vault name.
+
+The selected backend vault is the remote sync target for this local Obsidian vault. Switching the selected backend vault also switches the plugin's local sync state, including known hashes, known revisions, pending deletes, and pending conflicts.
 
 ## 5. Manually Sync
 
@@ -68,4 +86,4 @@ Use the NoX Sync ribbon button or the `NoX Sync: Sync vault` command.
 
 The plugin does not automatically upload, download, delete, or overwrite vault files on startup. Sync is manual by design.
 
-For a new backend, the first manual sync uploads the current vault. A second device receives those files only after its own manual sync.
+For a new backend vault, the first manual sync uploads the current vault. A second device receives those files only after it selects the same backend vault and performs its own manual sync.

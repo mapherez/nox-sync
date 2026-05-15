@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
@@ -16,22 +15,35 @@ import (
 
 const APIKeyPrefix = "noxsync_"
 
-// CurrentAPIKey returns the active API key so the admin page can display it.
-func (s *Store) CurrentAPIKey(ctx context.Context) (string, error) {
+// CurrentAPIKey returns the active API key for a dashboard user.
+func (s *Store) CurrentAPIKey(ctx context.Context, userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return "", fmt.Errorf("%w: userId is required", ErrBadRequest)
+	}
+
 	var key string
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT key_value
 		FROM api_keys
-		WHERE id = 1
-	`).Scan(&key); err != nil {
+		WHERE user_id = ?
+	`, userID).Scan(&key); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return s.RotateAPIKey(ctx, userID)
+		}
 		return "", fmt.Errorf("load current API key: %w", err)
 	}
 
 	return key, nil
 }
 
-// RotateAPIKey replaces the active API key and invalidates the previous key.
-func (s *Store) RotateAPIKey(ctx context.Context) (string, error) {
+// RotateAPIKey replaces one user's active API key and invalidates the previous key.
+func (s *Store) RotateAPIKey(ctx context.Context, userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return "", fmt.Errorf("%w: userId is required", ErrBadRequest)
+	}
+
 	now := timestamp(time.Now())
 	key, keyHash, err := newAPIKey()
 	if err != nil {
@@ -39,70 +51,64 @@ func (s *Store) RotateAPIKey(ctx context.Context) (string, error) {
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, key_prefix, key_value, key_hash, created_at, rotated_at)
-		VALUES (1, ?, ?, ?, ?, NULL)
-		ON CONFLICT(id) DO UPDATE SET
+		INSERT INTO api_keys (user_id, key_prefix, key_value, key_hash, created_at, rotated_at)
+		VALUES (?, ?, ?, ?, ?, NULL)
+		ON CONFLICT(user_id) DO UPDATE SET
 			key_prefix = excluded.key_prefix,
 			key_value = excluded.key_value,
 			key_hash = excluded.key_hash,
 			rotated_at = excluded.created_at
-	`, APIKeyPrefix, key, keyHash, now); err != nil {
+	`, userID, APIKeyPrefix, key, keyHash, now); err != nil {
 		return "", fmt.Errorf("rotate API key: %w", err)
 	}
 
 	return key, nil
 }
 
-// ValidateAPIKey checks whether a submitted API key matches the active key.
-func (s *Store) ValidateAPIKey(ctx context.Context, submitted string) (bool, error) {
+// AuthenticateAPIKey resolves a submitted plugin API key to exactly one active user.
+func (s *Store) AuthenticateAPIKey(ctx context.Context, submitted string) (User, bool, error) {
 	submitted = strings.TrimSpace(submitted)
 	if !strings.HasPrefix(submitted, APIKeyPrefix) {
-		return false, nil
+		return User{}, false, nil
 	}
 
-	var expectedHash string
+	var user User
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT key_hash
-		FROM api_keys
-		WHERE id = 1
-	`).Scan(&expectedHash); err != nil {
+		SELECT
+			u.id,
+			COALESCE(u.google_sub, ''),
+			u.email,
+			u.first_name,
+			u.display_name,
+			u.role,
+			u.status,
+			COALESCE(u.last_login_at, '')
+		FROM api_keys ak
+		JOIN users u ON u.id = ak.user_id
+		WHERE ak.key_hash = ? AND u.status = ?
+	`, hashAPIKey(submitted), UserStatusActive).Scan(
+		&user.ID,
+		&user.GoogleSub,
+		&user.Email,
+		&user.FirstName,
+		&user.DisplayName,
+		&user.Role,
+		&user.Status,
+		&user.LastLoginAt,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
+			return User{}, false, nil
 		}
-		return false, fmt.Errorf("load API key hash: %w", err)
+		return User{}, false, fmt.Errorf("load API key user: %w", err)
 	}
 
-	submittedHash := hashAPIKey(submitted)
-	return subtle.ConstantTimeCompare([]byte(expectedHash), []byte(submittedHash)) == 1, nil
+	return user, true, nil
 }
 
-func ensureAPIKeyTx(ctx context.Context, tx txAPI, now string) error {
-	var count int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(1)
-		FROM api_keys
-		WHERE id = 1
-	`).Scan(&count); err != nil {
-		return fmt.Errorf("check API key row: %w", err)
-	}
-
-	if count > 0 {
-		return nil
-	}
-
-	key, keyHash, err := newAPIKey()
-	if err != nil {
-		return err
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO api_keys (id, key_prefix, key_value, key_hash, created_at)
-		VALUES (1, ?, ?, ?, ?)
-	`, APIKeyPrefix, key, keyHash, now); err != nil {
-		return fmt.Errorf("insert initial API key: %w", err)
-	}
-
-	return nil
+// ValidateAPIKey checks whether a submitted API key belongs to an active user.
+func (s *Store) ValidateAPIKey(ctx context.Context, submitted string) (bool, error) {
+	_, ok, err := s.AuthenticateAPIKey(ctx, submitted)
+	return ok, err
 }
 
 func newAPIKey() (string, string, error) {

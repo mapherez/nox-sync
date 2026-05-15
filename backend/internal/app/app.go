@@ -15,9 +15,13 @@ import (
 
 // Config contains the minimal backend runtime configuration.
 type Config struct {
-	Addr    string
-	DataDir string
-	Version string
+	Addr               string
+	DataDir            string
+	Version            string
+	PublicURL          string
+	GoogleClientID     string
+	GoogleClientSecret string
+	AdminEmails        []string
 }
 
 // Run starts the backend HTTP server.
@@ -45,6 +49,9 @@ func Run(ctx context.Context, cfg Config) error {
 			log.Printf("close sqlite database: %v", err)
 		}
 	}()
+	if err := store.BootstrapAdmins(ctx, cfg.AdminEmails); err != nil {
+		return err
+	}
 
 	server := NewServer(cfg, store)
 	serverCtx, stopServer := context.WithCancel(ctx)

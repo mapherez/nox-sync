@@ -7,31 +7,37 @@ import (
 
 type statusBroker struct {
 	mu      sync.Mutex
-	clients map[chan []byte]struct{}
+	clients map[string]map[chan []byte]struct{}
 }
 
 func newStatusBroker() *statusBroker {
 	return &statusBroker{
-		clients: map[chan []byte]struct{}{},
+		clients: map[string]map[chan []byte]struct{}{},
 	}
 }
 
-func (b *statusBroker) subscribe() (<-chan []byte, func()) {
+func (b *statusBroker) subscribe(vaultID string) (<-chan []byte, func()) {
 	ch := make(chan []byte, 4)
 
 	b.mu.Lock()
-	b.clients[ch] = struct{}{}
+	if b.clients[vaultID] == nil {
+		b.clients[vaultID] = map[chan []byte]struct{}{}
+	}
+	b.clients[vaultID][ch] = struct{}{}
 	b.mu.Unlock()
 
 	return ch, func() {
 		b.mu.Lock()
-		delete(b.clients, ch)
+		delete(b.clients[vaultID], ch)
+		if len(b.clients[vaultID]) == 0 {
+			delete(b.clients, vaultID)
+		}
 		close(ch)
 		b.mu.Unlock()
 	}
 }
 
-func (b *statusBroker) broadcast(payload any) {
+func (b *statusBroker) broadcast(vaultID string, payload any) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return
@@ -40,7 +46,7 @@ func (b *statusBroker) broadcast(payload any) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	for ch := range b.clients {
+	for ch := range b.clients[vaultID] {
 		select {
 		case ch <- body:
 		default:

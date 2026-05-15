@@ -37,13 +37,22 @@ type stagedUpload struct {
 	StagingPath string
 }
 
-// BeginSync acquires the global sync lock and opens a sync session.
-func (s *Store) BeginSync(ctx context.Context, req BeginSyncRequest) (BeginSyncResult, error) {
+type syncSession struct {
+	SessionID string
+	UserID    string
+	VaultID   string
+	ClientID  string
+	Status    string
+}
+
+// BeginSync acquires the selected vault's sync lock and opens a sync session.
+func (s *Store) BeginSync(ctx context.Context, userID string, req BeginSyncRequest) (BeginSyncResult, error) {
+	userID = strings.TrimSpace(userID)
 	clientID := strings.TrimSpace(req.ClientID)
 	clientName := strings.TrimSpace(req.ClientName)
 	vaultID := strings.TrimSpace(req.VaultID)
-	if clientID == "" || vaultID == "" {
-		return BeginSyncResult{}, fmt.Errorf("%w: clientId and vaultId are required", ErrBadRequest)
+	if userID == "" || clientID == "" || vaultID == "" {
+		return BeginSyncResult{}, fmt.Errorf("%w: userId, clientId, and vaultId are required", ErrBadRequest)
 	}
 	if clientName == "" {
 		clientName = defaultClientName
@@ -64,7 +73,12 @@ func (s *Store) BeginSync(ctx context.Context, req BeginSyncRequest) (BeginSyncR
 	}
 	defer rollback(tx)
 
-	lockStatus, lockSessionID, expiresAt, err := currentLock(ctx, tx)
+	revision, err := ensureActiveVaultTx(ctx, tx, userID, vaultID)
+	if err != nil {
+		return BeginSyncResult{}, err
+	}
+
+	lockStatus, lockSessionID, expiresAt, err := currentLock(ctx, tx, vaultID)
 	if err != nil {
 		return BeginSyncResult{}, err
 	}
@@ -84,43 +98,43 @@ func (s *Store) BeginSync(ctx context.Context, req BeginSyncRequest) (BeginSyncR
 		staleSessionID = lockSessionID
 	}
 
-	var revision int64
-	if err := tx.QueryRowContext(ctx, `
-		SELECT revision
-		FROM server_state
-		WHERE id = 1
-	`).Scan(&revision); err != nil {
-		return BeginSyncResult{}, fmt.Errorf("load server revision: %w", err)
-	}
-
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO sync_sessions (
 			session_id,
+			user_id,
+			vault_id,
 			client_id,
 			client_name,
-			vault_id,
 			status,
 			started_at,
 			base_server_revision
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, sessionID, clientID, clientName, vaultID, SessionStatusActive, nowText, revision); err != nil {
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, sessionID, userID, vaultID, clientID, clientName, SessionStatusActive, nowText, revision); err != nil {
 		return BeginSyncResult{}, fmt.Errorf("insert sync session: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE sync_locks
-		SET
-			session_id = ?,
-			client_id = ?,
-			client_name = ?,
-			vault_id = ?,
-			status = ?,
-			acquired_at = ?,
-			heartbeat_at = ?,
-			expires_at = ?
-		WHERE id = 1
-	`, sessionID, clientID, clientName, vaultID, SyncStateSyncing, nowText, nowText, expiresText); err != nil {
+		INSERT INTO sync_locks (
+			vault_id,
+			session_id,
+			client_id,
+			client_name,
+			status,
+			acquired_at,
+			heartbeat_at,
+			expires_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(vault_id) DO UPDATE SET
+			session_id = excluded.session_id,
+			client_id = excluded.client_id,
+			client_name = excluded.client_name,
+			status = excluded.status,
+			acquired_at = excluded.acquired_at,
+			heartbeat_at = excluded.heartbeat_at,
+			expires_at = excluded.expires_at
+	`, vaultID, sessionID, clientID, clientName, SyncStateSyncing, nowText, nowText, expiresText); err != nil {
 		return BeginSyncResult{}, fmt.Errorf("acquire sync lock: %w", err)
 	}
 
@@ -140,8 +154,9 @@ func (s *Store) BeginSync(ctx context.Context, req BeginSyncRequest) (BeginSyncR
 }
 
 // HeartbeatSync refreshes the active sync lock.
-func (s *Store) HeartbeatSync(ctx context.Context, req HeartbeatRequest) error {
-	if err := s.ensureActiveSession(ctx, req.SessionID, req.ClientID); err != nil {
+func (s *Store) HeartbeatSync(ctx context.Context, userID string, req HeartbeatRequest) error {
+	session, err := s.ensureActiveSession(ctx, userID, req.SessionID, req.ClientID)
+	if err != nil {
 		return err
 	}
 
@@ -149,8 +164,8 @@ func (s *Store) HeartbeatSync(ctx context.Context, req HeartbeatRequest) error {
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sync_locks
 		SET heartbeat_at = ?, expires_at = ?
-		WHERE id = 1 AND session_id = ? AND client_id = ? AND status = ?
-	`, timestamp(now), timestamp(now.Add(lockTTL)), req.SessionID, req.ClientID, SyncStateSyncing)
+		WHERE vault_id = ? AND session_id = ? AND client_id = ? AND status = ?
+	`, timestamp(now), timestamp(now.Add(lockTTL)), session.VaultID, req.SessionID, req.ClientID, SyncStateSyncing)
 	if err != nil {
 		return fmt.Errorf("refresh sync heartbeat: %w", err)
 	}
@@ -167,9 +182,13 @@ func (s *Store) HeartbeatSync(ctx context.Context, req HeartbeatRequest) error {
 }
 
 // PlanSync compares a local manifest against backend metadata and persists a sync plan.
-func (s *Store) PlanSync(ctx context.Context, req ManifestRequest) (SyncPlan, error) {
-	if err := s.ensureActiveSession(ctx, req.SessionID, req.ClientID); err != nil {
+func (s *Store) PlanSync(ctx context.Context, userID string, req ManifestRequest) (SyncPlan, error) {
+	session, err := s.ensureActiveSession(ctx, userID, req.SessionID, req.ClientID)
+	if err != nil {
 		return SyncPlan{}, err
+	}
+	if strings.TrimSpace(req.VaultID) != "" && strings.TrimSpace(req.VaultID) != session.VaultID {
+		return SyncPlan{}, fmt.Errorf("%w: manifest vaultId does not match session", ErrBadRequest)
 	}
 
 	localFiles, deletedPaths, err := normalizeManifest(req)
@@ -177,7 +196,7 @@ func (s *Store) PlanSync(ctx context.Context, req ManifestRequest) (SyncPlan, er
 		return SyncPlan{}, err
 	}
 
-	remoteFiles, err := s.loadRemoteFiles(ctx)
+	remoteFiles, err := s.loadRemoteFiles(ctx, session.VaultID)
 	if err != nil {
 		return SyncPlan{}, err
 	}
@@ -299,11 +318,11 @@ func (s *Store) PlanSync(ctx context.Context, req ManifestRequest) (SyncPlan, er
 		}
 	}
 
-	if err := s.replacePlan(ctx, req.SessionID, actions); err != nil {
+	if err := s.replacePlan(ctx, session.VaultID, req.SessionID, actions); err != nil {
 		return SyncPlan{}, err
 	}
 
-	revision, err := s.ServerRevision(ctx)
+	revision, err := s.ServerRevision(ctx, userID, session.VaultID)
 	if err != nil {
 		return SyncPlan{}, err
 	}
@@ -316,8 +335,9 @@ func (s *Store) PlanSync(ctx context.Context, req ManifestRequest) (SyncPlan, er
 }
 
 // CommitSync validates staged uploads, updates remote metadata, and releases the lock.
-func (s *Store) CommitSync(ctx context.Context, req CommitRequest) (CommitResult, error) {
-	if err := s.ensureActiveSession(ctx, req.SessionID, req.ClientID); err != nil {
+func (s *Store) CommitSync(ctx context.Context, userID string, req CommitRequest) (CommitResult, error) {
+	session, err := s.ensureActiveSession(ctx, userID, req.SessionID, req.ClientID)
+	if err != nil {
 		return CommitResult{}, err
 	}
 
@@ -364,13 +384,9 @@ func (s *Store) CommitSync(ctx context.Context, req CommitRequest) (CommitResult
 	}
 	defer rollback(tx)
 
-	var serverRevision int64
-	if err := tx.QueryRowContext(ctx, `
-		SELECT revision
-		FROM server_state
-		WHERE id = 1
-	`).Scan(&serverRevision); err != nil {
-		return CommitResult{}, fmt.Errorf("load server revision: %w", err)
+	serverRevision, err := ensureActiveVaultTx(ctx, tx, userID, session.VaultID)
+	if err != nil {
+		return CommitResult{}, err
 	}
 
 	commitRevision := serverRevision
@@ -382,11 +398,11 @@ func (s *Store) CommitSync(ctx context.Context, req CommitRequest) (CommitResult
 		switch action.Type {
 		case PlanActionUpload:
 			upload := uploads[action.Path]
-			if err := applyUploadTx(ctx, tx, action, upload, commitRevision, nowText); err != nil {
+			if err := applyUploadTx(ctx, tx, session.VaultID, action, upload, commitRevision, nowText); err != nil {
 				return CommitResult{}, err
 			}
 		case PlanActionDeleteRemote:
-			if err := applyRemoteDeleteTx(ctx, tx, action, req.SessionID, req.ClientID, commitRevision, nowText); err != nil {
+			if err := applyRemoteDeleteTx(ctx, tx, session.VaultID, action, req.SessionID, req.ClientID, commitRevision, nowText); err != nil {
 				return CommitResult{}, err
 			}
 		}
@@ -394,11 +410,11 @@ func (s *Store) CommitSync(ctx context.Context, req CommitRequest) (CommitResult
 
 	if mutatesRemote {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE server_state
+			UPDATE vaults
 			SET revision = ?, updated_at = ?
-			WHERE id = 1
-		`, commitRevision, nowText); err != nil {
-			return CommitResult{}, fmt.Errorf("update server revision: %w", err)
+			WHERE id = ? AND user_id = ? AND status = ?
+		`, commitRevision, nowText, session.VaultID, userID, VaultStatusActive); err != nil {
+			return CommitResult{}, fmt.Errorf("update vault revision: %w", err)
 		}
 	}
 
@@ -413,12 +429,12 @@ func (s *Store) CommitSync(ctx context.Context, req CommitRequest) (CommitResult
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sync_sessions
 		SET status = ?, completed_at = ?, commit_server_revision = ?
-		WHERE session_id = ? AND client_id = ? AND status = ?
-	`, SessionStatusCommitted, nowText, commitRevision, req.SessionID, req.ClientID, SessionStatusActive); err != nil {
+		WHERE session_id = ? AND user_id = ? AND client_id = ? AND status = ?
+	`, SessionStatusCommitted, nowText, commitRevision, req.SessionID, userID, req.ClientID, SessionStatusActive); err != nil {
 		return CommitResult{}, fmt.Errorf("complete sync session: %w", err)
 	}
 
-	if err := releaseLockTx(ctx, tx, req.SessionID, req.ClientID, SyncStateIdle); err != nil {
+	if err := releaseLockTx(ctx, tx, session.VaultID, req.SessionID, req.ClientID, SyncStateIdle); err != nil {
 		return CommitResult{}, err
 	}
 
@@ -431,8 +447,9 @@ func (s *Store) CommitSync(ctx context.Context, req CommitRequest) (CommitResult
 }
 
 // AbortSync aborts an active sync session and releases the lock.
-func (s *Store) AbortSync(ctx context.Context, req AbortRequest) error {
-	if err := s.ensureSessionOwnership(ctx, req.SessionID, req.ClientID); err != nil {
+func (s *Store) AbortSync(ctx context.Context, userID string, req AbortRequest) error {
+	session, err := s.ensureSessionOwnership(ctx, userID, req.SessionID, req.ClientID)
+	if err != nil {
 		return err
 	}
 
@@ -451,12 +468,12 @@ func (s *Store) AbortSync(ctx context.Context, req AbortRequest) error {
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sync_sessions
 		SET status = ?, completed_at = ?, error_code = ?, error_message = ?
-		WHERE session_id = ? AND client_id = ? AND status = ?
-	`, SessionStatusAborted, nowText, "SYNC_ABORTED", reason, req.SessionID, req.ClientID, SessionStatusActive); err != nil {
+		WHERE session_id = ? AND user_id = ? AND client_id = ? AND status = ?
+	`, SessionStatusAborted, nowText, "SYNC_ABORTED", reason, req.SessionID, userID, req.ClientID, SessionStatusActive); err != nil {
 		return fmt.Errorf("abort sync session: %w", err)
 	}
 
-	if err := releaseLockTx(ctx, tx, req.SessionID, req.ClientID, SyncStateIdle); err != nil {
+	if err := releaseLockTx(ctx, tx, session.VaultID, req.SessionID, req.ClientID, SyncStateIdle); err != nil {
 		return err
 	}
 
@@ -469,7 +486,11 @@ func (s *Store) AbortSync(ctx context.Context, req AbortRequest) error {
 }
 
 // DownloadFile returns metadata for a finalized remote file.
-func (s *Store) DownloadFile(ctx context.Context, vaultPath string) (DownloadResult, error) {
+func (s *Store) DownloadFile(ctx context.Context, userID string, vaultID string, vaultPath string) (DownloadResult, error) {
+	if _, err := s.VaultByID(ctx, userID, vaultID); err != nil {
+		return DownloadResult{}, err
+	}
+
 	normalizedPath, err := NormalizeVaultPath(vaultPath)
 	if err != nil {
 		return DownloadResult{}, err
@@ -479,8 +500,8 @@ func (s *Store) DownloadFile(ctx context.Context, vaultPath string) (DownloadRes
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT path, current_hash, size, revision
 		FROM files
-		WHERE path = ? AND deleted = 0
-	`, normalizedPath).Scan(&result.Path, &result.Hash, &result.Size, &result.Revision); err != nil {
+		WHERE vault_id = ? AND path = ? AND deleted = 0
+	`, vaultID, normalizedPath).Scan(&result.Path, &result.Hash, &result.Size, &result.Revision); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return DownloadResult{}, ErrNotFound
 		}
@@ -541,11 +562,12 @@ func uploadAction(file ManifestFile) PlanAction {
 	}
 }
 
-func (s *Store) loadRemoteFiles(ctx context.Context) (map[string]remoteFile, error) {
+func (s *Store) loadRemoteFiles(ctx context.Context, vaultID string) (map[string]remoteFile, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT path, COALESCE(current_hash, ''), COALESCE(previous_hash, ''), size, revision, deleted
 		FROM files
-	`)
+		WHERE vault_id = ?
+	`, vaultID)
 	if err != nil {
 		return nil, fmt.Errorf("load remote files: %w", err)
 	}
@@ -568,7 +590,7 @@ func (s *Store) loadRemoteFiles(ctx context.Context) (map[string]remoteFile, err
 	return files, nil
 }
 
-func (s *Store) replacePlan(ctx context.Context, sessionID string, actions []PlanAction) error {
+func (s *Store) replacePlan(ctx context.Context, vaultID string, sessionID string, actions []PlanAction) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin plan transaction: %w", err)
@@ -614,6 +636,7 @@ func (s *Store) replacePlan(ctx context.Context, sessionID string, actions []Pla
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO conflicts (
 					id,
+					vault_id,
 					path,
 					session_id,
 					local_hash,
@@ -623,8 +646,8 @@ func (s *Store) replacePlan(ctx context.Context, sessionID string, actions []Pla
 					status,
 					created_at
 				)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, conflictID, action.Path, sessionID, action.ExpectedHash, action.RemoteHash, action.BaseHash, "file", "PENDING", nowText); err != nil {
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, conflictID, vaultID, action.Path, sessionID, action.ExpectedHash, action.RemoteHash, action.BaseHash, "file", "PENDING", nowText); err != nil {
 				return fmt.Errorf("insert conflict: %w", err)
 			}
 		}
@@ -689,76 +712,76 @@ func (s *Store) loadValidatedUploads(ctx context.Context, sessionID string) (map
 	return uploads, nil
 }
 
-func applyUploadTx(ctx context.Context, tx *sql.Tx, action PlanAction, upload stagedUpload, revision int64, nowText string) error {
+func applyUploadTx(ctx context.Context, tx *sql.Tx, vaultID string, action PlanAction, upload stagedUpload, revision int64, nowText string) error {
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO file_revisions (path, hash, size, revision, kind, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, action.Path, upload.ActualHash, upload.Size, revision, fileRevisionKindWrite, nowText); err != nil {
+		INSERT INTO file_revisions (vault_id, path, hash, size, revision, kind, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, vaultID, action.Path, upload.ActualHash, upload.Size, revision, fileRevisionKindWrite, nowText); err != nil {
 		return fmt.Errorf("insert file revision: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO files (path, current_hash, previous_hash, size, revision, deleted, updated_at)
-		VALUES (?, ?, NULL, ?, ?, 0, ?)
-		ON CONFLICT(path) DO UPDATE SET
+		INSERT INTO files (vault_id, path, current_hash, previous_hash, size, revision, deleted, updated_at)
+		VALUES (?, ?, ?, NULL, ?, ?, 0, ?)
+		ON CONFLICT(vault_id, path) DO UPDATE SET
 			previous_hash = COALESCE(files.current_hash, files.previous_hash),
 			current_hash = excluded.current_hash,
 			size = excluded.size,
 			revision = excluded.revision,
 			deleted = 0,
 			updated_at = excluded.updated_at
-	`, action.Path, upload.ActualHash, upload.Size, revision, nowText); err != nil {
+	`, vaultID, action.Path, upload.ActualHash, upload.Size, revision, nowText); err != nil {
 		return fmt.Errorf("upsert file metadata: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tombstones WHERE path = ?`, action.Path); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tombstones WHERE vault_id = ? AND path = ?`, vaultID, action.Path); err != nil {
 		return fmt.Errorf("clear tombstone: %w", err)
 	}
 
 	return nil
 }
 
-func applyRemoteDeleteTx(ctx context.Context, tx *sql.Tx, action PlanAction, sessionID string, clientID string, revision int64, nowText string) error {
+func applyRemoteDeleteTx(ctx context.Context, tx *sql.Tx, vaultID string, action PlanAction, sessionID string, clientID string, revision int64, nowText string) error {
 	var previousHash sql.NullString
 	var size int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT current_hash, size
 		FROM files
-		WHERE path = ?
-	`, action.Path).Scan(&previousHash, &size); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		WHERE vault_id = ? AND path = ?
+	`, vaultID, action.Path).Scan(&previousHash, &size); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("load deleted file metadata: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO file_revisions (path, hash, size, revision, kind, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, action.Path, previousHash.String, size, revision, fileRevisionKindDel, nowText); err != nil {
+		INSERT INTO file_revisions (vault_id, path, hash, size, revision, kind, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, vaultID, action.Path, previousHash.String, size, revision, fileRevisionKindDel, nowText); err != nil {
 		return fmt.Errorf("insert delete revision: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO files (path, current_hash, previous_hash, size, revision, deleted, updated_at)
-		VALUES (?, NULL, ?, 0, ?, 1, ?)
-		ON CONFLICT(path) DO UPDATE SET
+		INSERT INTO files (vault_id, path, current_hash, previous_hash, size, revision, deleted, updated_at)
+		VALUES (?, ?, NULL, ?, 0, ?, 1, ?)
+		ON CONFLICT(vault_id, path) DO UPDATE SET
 			previous_hash = files.current_hash,
 			current_hash = NULL,
 			size = 0,
 			revision = excluded.revision,
 			deleted = 1,
 			updated_at = excluded.updated_at
-	`, action.Path, previousHash.String, revision, nowText); err != nil {
+	`, vaultID, action.Path, previousHash.String, revision, nowText); err != nil {
 		return fmt.Errorf("mark file deleted: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO tombstones (path, revision, deleted_at, client_id, session_id)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(path) DO UPDATE SET
+		INSERT INTO tombstones (vault_id, path, revision, deleted_at, client_id, session_id)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(vault_id, path) DO UPDATE SET
 			revision = excluded.revision,
 			deleted_at = excluded.deleted_at,
 			client_id = excluded.client_id,
 			session_id = excluded.session_id
-	`, action.Path, revision, nowText, clientID, sessionID); err != nil {
+	`, vaultID, action.Path, revision, nowText, clientID, sessionID); err != nil {
 		return fmt.Errorf("upsert tombstone: %w", err)
 	}
 
@@ -778,9 +801,10 @@ func (s *Store) uploadPlanned(ctx context.Context, sessionID string, vaultPath s
 	return count > 0, nil
 }
 
-func (s *Store) ensureActiveSession(ctx context.Context, sessionID string, clientID string) error {
-	if err := s.ensureSessionOwnership(ctx, sessionID, clientID); err != nil {
-		return err
+func (s *Store) ensureActiveSession(ctx context.Context, userID string, sessionID string, clientID string) (syncSession, error) {
+	session, err := s.ensureSessionOwnership(ctx, userID, sessionID, clientID)
+	if err != nil {
+		return syncSession{}, err
 	}
 
 	var lockSessionID string
@@ -794,68 +818,95 @@ func (s *Store) ensureActiveSession(ctx context.Context, sessionID string, clien
 			status,
 			COALESCE(expires_at, '')
 		FROM sync_locks
-		WHERE id = 1
-	`).Scan(&lockSessionID, &lockClientID, &lockStatus, &expiresAt); err != nil {
-		return fmt.Errorf("load sync lock: %w", err)
+		WHERE vault_id = ?
+	`, session.VaultID).Scan(&lockSessionID, &lockClientID, &lockStatus, &expiresAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return syncSession{}, ErrSyncSessionNotFound
+		}
+		return syncSession{}, fmt.Errorf("load sync lock: %w", err)
 	}
 
 	if lockSessionID != strings.TrimSpace(sessionID) || lockClientID != strings.TrimSpace(clientID) || lockStatus != SyncStateSyncing {
-		return ErrSyncSessionNotFound
+		return syncSession{}, ErrSyncSessionNotFound
 	}
 
 	expired, err := isExpired(expiresAt, time.Now().UTC())
 	if err != nil {
-		return err
+		return syncSession{}, err
 	}
 	if expired {
-		if _, err := s.markSessionStale(ctx, sessionID); err != nil {
-			return err
+		if _, err := s.markSessionStale(ctx, session.VaultID, sessionID); err != nil {
+			return syncSession{}, err
 		}
-		return ErrSyncSessionStale
+		return syncSession{}, ErrSyncSessionStale
 	}
 
-	return nil
+	return session, nil
 }
 
-func (s *Store) ensureSessionOwnership(ctx context.Context, sessionID string, clientID string) error {
+func (s *Store) ensureSessionOwnership(ctx context.Context, userID string, sessionID string, clientID string) (syncSession, error) {
+	userID = strings.TrimSpace(userID)
 	sessionID = strings.TrimSpace(sessionID)
 	clientID = strings.TrimSpace(clientID)
-	if sessionID == "" || clientID == "" {
-		return fmt.Errorf("%w: sessionId and clientId are required", ErrBadRequest)
+	if userID == "" || sessionID == "" || clientID == "" {
+		return syncSession{}, fmt.Errorf("%w: userId, sessionId, and clientId are required", ErrBadRequest)
 	}
 
-	var status string
-	var storedClientID string
+	var session syncSession
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT status, client_id
+		SELECT session_id, user_id, vault_id, client_id, status
 		FROM sync_sessions
-		WHERE session_id = ?
-	`, sessionID).Scan(&status, &storedClientID); err != nil {
+		WHERE session_id = ? AND user_id = ?
+	`, sessionID, userID).Scan(&session.SessionID, &session.UserID, &session.VaultID, &session.ClientID, &session.Status); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ErrSyncSessionNotFound
+			return syncSession{}, ErrSyncSessionNotFound
 		}
-		return fmt.Errorf("load sync session: %w", err)
+		return syncSession{}, fmt.Errorf("load sync session: %w", err)
 	}
 
-	if storedClientID != clientID {
-		return ErrSyncSessionNotFound
+	if session.ClientID != clientID {
+		return syncSession{}, ErrSyncSessionNotFound
 	}
-	if status != SessionStatusActive {
-		return ErrSyncSessionStale
+	if session.Status != SessionStatusActive {
+		return syncSession{}, ErrSyncSessionStale
 	}
 
-	return nil
+	return session, nil
 }
 
-func currentLock(ctx context.Context, tx *sql.Tx) (string, string, string, error) {
+// SessionVaultID returns the vault linked to a user's sync session.
+func (s *Store) SessionVaultID(ctx context.Context, userID string, sessionID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	sessionID = strings.TrimSpace(sessionID)
+	if userID == "" || sessionID == "" {
+		return "", fmt.Errorf("%w: userId and sessionId are required", ErrBadRequest)
+	}
+	var vaultID string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT vault_id
+		FROM sync_sessions
+		WHERE session_id = ? AND user_id = ?
+	`, sessionID, userID).Scan(&vaultID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrSyncSessionNotFound
+		}
+		return "", fmt.Errorf("load session vault: %w", err)
+	}
+	return vaultID, nil
+}
+
+func currentLock(ctx context.Context, tx *sql.Tx, vaultID string) (string, string, string, error) {
 	var status string
 	var sessionID string
 	var expiresAt string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT status, COALESCE(session_id, ''), COALESCE(expires_at, '')
 		FROM sync_locks
-		WHERE id = 1
-	`).Scan(&status, &sessionID, &expiresAt); err != nil {
+		WHERE vault_id = ?
+	`, vaultID).Scan(&status, &sessionID, &expiresAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SyncStateIdle, "", "", nil
+		}
 		return "", "", "", fmt.Errorf("load current lock: %w", err)
 	}
 
@@ -890,7 +941,7 @@ func markSessionFailedTx(ctx context.Context, tx *sql.Tx, sessionID string, code
 	return nil
 }
 
-func (s *Store) markSessionStale(ctx context.Context, sessionID string) (bool, error) {
+func (s *Store) markSessionStale(ctx context.Context, vaultID string, sessionID string) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin stale session transaction: %w", err)
@@ -903,9 +954,9 @@ func (s *Store) markSessionStale(ctx context.Context, sessionID string) (bool, e
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE sync_locks
-		SET status = ?, session_id = NULL, client_id = NULL, client_name = NULL, vault_id = NULL, acquired_at = NULL, heartbeat_at = NULL, expires_at = NULL
-		WHERE id = 1 AND session_id = ?
-	`, SyncStateStaleLock, sessionID)
+		SET status = ?, session_id = NULL, client_id = NULL, client_name = NULL, acquired_at = NULL, heartbeat_at = NULL, expires_at = NULL
+		WHERE vault_id = ? AND session_id = ?
+	`, SyncStateStaleLock, vaultID, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("mark lock stale: %w", err)
 	}
@@ -922,12 +973,12 @@ func (s *Store) markSessionStale(ctx context.Context, sessionID string) (bool, e
 	return rowsAffected > 0, nil
 }
 
-func releaseLockTx(ctx context.Context, tx *sql.Tx, sessionID string, clientID string, status string) error {
+func releaseLockTx(ctx context.Context, tx *sql.Tx, vaultID string, sessionID string, clientID string, status string) error {
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sync_locks
-		SET status = ?, session_id = NULL, client_id = NULL, client_name = NULL, vault_id = NULL, acquired_at = NULL, heartbeat_at = NULL, expires_at = NULL
-		WHERE id = 1 AND session_id = ? AND client_id = ?
-	`, status, sessionID, clientID); err != nil {
+		SET status = ?, session_id = NULL, client_id = NULL, client_name = NULL, acquired_at = NULL, heartbeat_at = NULL, expires_at = NULL
+		WHERE vault_id = ? AND session_id = ? AND client_id = ?
+	`, status, vaultID, sessionID, clientID); err != nil {
 		return fmt.Errorf("release sync lock: %w", err)
 	}
 	return nil

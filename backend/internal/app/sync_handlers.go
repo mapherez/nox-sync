@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +15,11 @@ import (
 const maxJSONBodyBytes = 1 << 20
 
 func (s *Server) handleBeginSync(w http.ResponseWriter, r *http.Request) {
-	if !s.requireMethod(w, r, http.MethodPost) || !s.requireAuth(w, r) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -25,18 +28,22 @@ func (s *Server) handleBeginSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.store.BeginSync(r.Context(), req)
+	result, err := s.store.BeginSync(r.Context(), user.ID, req)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
 
-	s.broadcastStatus(r)
+	s.broadcastStatus(r, user.ID, req.VaultID)
 	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleHeartbeatSync(w http.ResponseWriter, r *http.Request) {
-	if !s.requireMethod(w, r, http.MethodPost) || !s.requireAuth(w, r) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -45,7 +52,7 @@ func (s *Server) handleHeartbeatSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.HeartbeatSync(r.Context(), req); err != nil {
+	if err := s.store.HeartbeatSync(r.Context(), user.ID, req); err != nil {
 		writeStorageError(w, err)
 		return
 	}
@@ -54,7 +61,11 @@ func (s *Server) handleHeartbeatSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleManifestSync(w http.ResponseWriter, r *http.Request) {
-	if !s.requireMethod(w, r, http.MethodPost) || !s.requireAuth(w, r) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -63,7 +74,7 @@ func (s *Server) handleManifestSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plan, err := s.store.PlanSync(r.Context(), req)
+	plan, err := s.store.PlanSync(r.Context(), user.ID, req)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -73,7 +84,11 @@ func (s *Server) handleManifestSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUploadSync(w http.ResponseWriter, r *http.Request) {
-	if !s.requireMethod(w, r, http.MethodPut) || !s.requireAuth(w, r) {
+	if !s.requireMethod(w, r, http.MethodPut) {
+		return
+	}
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -97,7 +112,7 @@ func (s *Server) handleUploadSync(w http.ResponseWriter, r *http.Request) {
 		expectedSize = size
 	}
 
-	if err := s.store.StageUpload(r.Context(), sessionID, clientID, vaultPath, expectedHash, expectedSize, r.Body); err != nil {
+	if err := s.store.StageUpload(r.Context(), user.ID, sessionID, clientID, vaultPath, expectedHash, expectedSize, r.Body); err != nil {
 		writeStorageError(w, err)
 		return
 	}
@@ -106,7 +121,11 @@ func (s *Server) handleUploadSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCommitSync(w http.ResponseWriter, r *http.Request) {
-	if !s.requireMethod(w, r, http.MethodPost) || !s.requireAuth(w, r) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -115,18 +134,28 @@ func (s *Server) handleCommitSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.store.CommitSync(r.Context(), req)
+	result, err := s.store.CommitSync(r.Context(), user.ID, req)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
 
-	s.broadcastStatus(r)
+	vaultID := strings.TrimSpace(r.URL.Query().Get("vaultId"))
+	if vaultID == "" {
+		if ownerVaultID, err := s.store.SessionVaultID(r.Context(), user.ID, req.SessionID); err == nil {
+			vaultID = ownerVaultID
+		}
+	}
+	s.broadcastStatus(r, user.ID, vaultID)
 	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleAbortSync(w http.ResponseWriter, r *http.Request) {
-	if !s.requireMethod(w, r, http.MethodPost) || !s.requireAuth(w, r) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -135,22 +164,31 @@ func (s *Server) handleAbortSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.AbortSync(r.Context(), req); err != nil {
+	vaultID, _ := s.store.SessionVaultID(r.Context(), user.ID, req.SessionID)
+	if err := s.store.AbortSync(r.Context(), user.ID, req); err != nil {
 		writeStorageError(w, err)
 		return
 	}
 
-	s.broadcastStatus(r)
+	s.broadcastStatus(r, user.ID, vaultID)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
-	if !s.requireMethod(w, r, http.MethodGet) || !s.requireAuth(w, r) {
+	if !s.requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
 		return
 	}
 
 	vaultPath := strings.TrimSpace(r.URL.Query().Get("path"))
-	result, err := s.store.DownloadFile(r.Context(), vaultPath)
+	vaultID, ok := vaultIDFromQuery(w, r)
+	if !ok {
+		return
+	}
+	result, err := s.store.DownloadFile(r.Context(), user.ID, vaultID, vaultPath)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -180,18 +218,6 @@ func (s *Server) requireMethod(w http.ResponseWriter, r *http.Request, method st
 	w.Header().Set("Allow", method)
 	writeJSONError(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "Method not allowed.")
 	return false
-}
-
-func (s *Server) broadcastStatus(r *http.Request) {
-	s.broadcastStatusContext(r.Context())
-}
-
-func (s *Server) broadcastStatusContext(ctx context.Context) {
-	payload, err := s.statusPayload(ctx)
-	if err != nil {
-		return
-	}
-	s.events.broadcast(payload)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -228,6 +254,8 @@ func writeStorageError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "CONFLICT_DETECTED", "Unresolved conflicts must be handled before commit.")
 	case errors.Is(err, storage.ErrNotFound):
 		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "Requested file was not found.")
+	case errors.Is(err, storage.ErrForbidden):
+		writeJSONError(w, http.StatusForbidden, "FORBIDDEN", "Access denied.")
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "SERVER_ERROR", fmt.Sprintf("Backend error: %v", err))
 	}

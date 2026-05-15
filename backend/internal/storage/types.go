@@ -6,6 +6,15 @@ const (
 	SyncStateFailed    = "FAILED"
 	SyncStateStaleLock = "STALE_LOCK"
 
+	UserRoleAdmin = "ADMIN"
+	UserRoleUser  = "USER"
+
+	UserStatusActive   = "ACTIVE"
+	UserStatusDisabled = "DISABLED"
+
+	VaultStatusActive  = "ACTIVE"
+	VaultStatusDeleted = "DELETED"
+
 	SessionStatusActive    = "ACTIVE"
 	SessionStatusCommitted = "COMMITTED"
 	SessionStatusAborted   = "ABORTED"
@@ -26,7 +35,48 @@ const (
 	UploadStatusValidated = "VALIDATED"
 )
 
-// BeginSyncRequest contains the client identity for acquiring the global sync lock.
+// User is an allowlisted Google account that can access the dashboard and API.
+type User struct {
+	ID          string
+	GoogleSub   string
+	Email       string
+	FirstName   string
+	DisplayName string
+	Role        string
+	Status      string
+	LastLoginAt string
+}
+
+// OAuthProfile contains the verified identity returned by Google.
+type OAuthProfile struct {
+	Sub         string
+	Email       string
+	FirstName   string
+	DisplayName string
+}
+
+// Vault describes a remote vault owned by one user.
+type Vault struct {
+	ID        string `json:"vaultId"`
+	UserID    string `json:"-"`
+	Name      string `json:"name"`
+	Revision  int64  `json:"revision"`
+	Status    string `json:"-"`
+	UpdatedAt string `json:"updatedAt"`
+	DeletedAt string `json:"-"`
+}
+
+// CreateVaultRequest is used by the plugin to create a remote vault.
+type CreateVaultRequest struct {
+	Name string `json:"name"`
+}
+
+// VaultListResponse is returned to the plugin settings UI.
+type VaultListResponse struct {
+	Vaults []Vault `json:"vaults"`
+}
+
+// BeginSyncRequest contains the client identity for acquiring a vault sync lock.
 type BeginSyncRequest struct {
 	ClientID   string `json:"clientId"`
 	ClientName string `json:"clientName"`
