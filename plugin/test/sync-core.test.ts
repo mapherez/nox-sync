@@ -30,8 +30,8 @@ test("normalizeVaultPath rejects empty and escaping paths", () => {
 });
 
 test("path predicates identify internal, trash, hidden, and Markdown paths", () => {
-  assert.equal(isPluginInternalPath(".obsidian/plugins/nox-sync/data.json"), true);
-  assert.equal(isPluginInternalPath(".obsidian/plugins/other/data.json"), false);
+  assert.equal(isPluginInternalPath("CustomConfig/plugins/nox-sync/data.json", "CustomConfig"), true);
+  assert.equal(isPluginInternalPath("CustomConfig/plugins/other/data.json", "CustomConfig"), false);
   assert.equal(isNoxSyncTrashPath(".nox-sync-trash/2026-05-14/Note.md"), true);
   assert.equal(isHiddenPath("Notes/.private.md"), true);
   assert.equal(isHiddenPath("Notes/Public.md"), false);

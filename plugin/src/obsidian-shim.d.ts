@@ -49,6 +49,7 @@ declare module "obsidian" {
 
   export interface Vault {
     adapter: DataAdapter;
+    configDir: string;
     getName(): string;
     getFiles(): TFile[];
     getAbstractFileByPath(path: string): TAbstractFile | null;

@@ -1614,7 +1614,7 @@ export default class NoxSyncPlugin extends Plugin {
 
   private async pruneEmptyParentFolders(path: string): Promise<void> {
     for (const folderPath of parentPathsDeepestFirst(path)) {
-      if (isPluginInternalPath(folderPath) || isNoxSyncTrashPath(folderPath)) {
+      if (isPluginInternalPath(folderPath, this.app.vault.configDir) || isNoxSyncTrashPath(folderPath)) {
         return;
       }
 
@@ -1879,7 +1879,7 @@ export default class NoxSyncPlugin extends Plugin {
   }
 
   private shouldExcludePath(path: string): boolean {
-    if (isPluginInternalPath(path) || isNoxSyncTrashPath(path)) {
+    if (isPluginInternalPath(path, this.app.vault.configDir) || isNoxSyncTrashPath(path)) {
       return true;
     }
 

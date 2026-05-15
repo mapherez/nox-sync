@@ -160,8 +160,14 @@ export function isMarkdownPath(path: string): boolean {
   return lowerPath.endsWith(".md") || lowerPath.endsWith(".markdown");
 }
 
-export function isPluginInternalPath(path: string): boolean {
-  return path === ".obsidian/plugins/nox-sync" || path.startsWith(".obsidian/plugins/nox-sync/");
+export function isPluginInternalPath(path: string, configDir: string): boolean {
+  const normalizedConfigDir = normalizeVaultPath(configDir);
+  if (!normalizedConfigDir) {
+    return false;
+  }
+
+  const pluginRoot = `${normalizedConfigDir}/plugins/nox-sync`;
+  return path === pluginRoot || path.startsWith(`${pluginRoot}/`);
 }
 
 export function isNoxSyncTrashPath(path: string): boolean {
