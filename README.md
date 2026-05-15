@@ -136,6 +136,8 @@ In Obsidian:
 - Create or select a backend vault.
 - Use the ribbon button to manually sync.
 
+By default, the `NoX Sync: Sync vault` command also uses `Ctrl+Shift+S` on Windows/Linux and `Cmd+Shift+S` on macOS. You can change it from Obsidian's Hotkeys settings.
+
 For the full first-run flow, see [User setup guide](docs/user-setup.md).
 
 ## Google OAuth

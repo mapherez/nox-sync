@@ -246,6 +246,7 @@ export default class NoxSyncPlugin extends Plugin {
     this.addCommand({
       id: "sync-vault",
       name: "NoX Sync: Sync vault",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "S" }],
       callback: () => {
         void this.handleManualSync();
       },

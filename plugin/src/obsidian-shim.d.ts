@@ -10,7 +10,12 @@ declare module "obsidian" {
     loadData(): Promise<unknown>;
     saveData(data: unknown): Promise<void>;
     addRibbonIcon(icon: string, title: string, callback: (evt: MouseEvent) => unknown): HTMLElement;
-    addCommand(command: { id: string; name: string; callback: () => unknown }): void;
+    addCommand(command: {
+      id: string;
+      name: string;
+      hotkeys?: Array<{ modifiers: string[]; key: string }>;
+      callback: () => unknown;
+    }): void;
     addSettingTab(tab: PluginSettingTab): void;
     registerEvent(eventRef: EventRef): void;
   }
