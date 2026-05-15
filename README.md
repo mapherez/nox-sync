@@ -6,6 +6,10 @@
 [![Docker](https://github.com/mapherez/nox-sync/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/mapherez/nox-sync/actions/workflows/docker-publish.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
+Made with ❤️ by [Mapherez](https://github.com/mapherez) - If you enjoy NoX Sync, please consider [buying me a beer 🍺](https://buymeacoffee.com/mapherez)
+
+## What is NoX Sync?
+
 NoX Sync is a private, self-hosted sync system for Obsidian vaults. It is designed for people who want a backend they control, Google-authenticated dashboard access, per-user API keys, multiple remote vaults, and explicit manual sync instead of background cloud synchronization.
 
 The project has two parts:
