@@ -11,10 +11,6 @@ jobs:
     name: Build and release plugin
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: plugin
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,35 +23,43 @@ jobs:
           cache-dependency-path: plugin/package-lock.json
 
       - name: Install dependencies
+        working-directory: plugin
         run: npm ci
 
       - name: Typecheck
+        working-directory: plugin
         run: npm run typecheck
 
       - name: Test
+        working-directory: plugin
         run: npm run test
 
       - name: Build plugin
+        working-directory: plugin
         run: npm run build
 
-      - name: Read plugin version
+      - name: Read and validate version
         id: version
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=plugin-v$VERSION" >> "$GITHUB_OUTPUT"
+          VERSION=$(node -p "require('./plugin/package.json').version")
+          MANIFEST_VERSION=$(node -p "require('./plugin/manifest.json').version")
 
-      - name: Create plugin zip
-        run: |
-          mkdir -p ../release
-          cd dist
-          zip -r ../../release/nox-sync-plugin-v${{ steps.version.outputs.version }}.zip main.js manifest.json styles.css
+          if [ "$VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "package.json version ($VERSION) does not match manifest.json version ($MANIFEST_VERSION)"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            "../release/nox-sync-plugin-v${{ steps.version.outputs.version }}.zip" \
-            --title "NoX Sync Plugin v${{ steps.version.outputs.version }}" \
-            --notes "Manual release for the NoX Sync Obsidian plugin."
+          VERSION="${{ steps.version.outputs.version }}"
+
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --draft \
+            plugin/dist/main.js \
+            plugin/dist/manifest.json \
+            plugin/dist/styles.css
