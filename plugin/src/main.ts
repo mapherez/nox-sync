@@ -574,6 +574,12 @@ export default class NoxSyncPlugin extends Plugin {
   }
 
   private async handleManualSync(): Promise<void> {
+    if (this.hasCredentials() && !this.settings.selectedVaultId.trim()) {
+      this.openNoxSyncSettings();
+      new Notice("Create or select a backend vault in NoX Sync settings.");
+      return;
+    }
+
     switch (this.buttonState) {
       case SyncButtonState.Synced:
         await this.refreshLocalAndBackendStatus();
@@ -720,6 +726,11 @@ export default class NoxSyncPlugin extends Plugin {
       this.stopSyncHeartbeat();
       this.clearSyncProgress();
     }
+  }
+
+  private openNoxSyncSettings(): void {
+    this.app.setting.open();
+    this.app.setting.openTabById(this.manifest.id);
   }
 
   private async beginSync(): Promise<BeginSyncResponse> {

@@ -1,16 +1,27 @@
 declare module "obsidian" {
   export class App {
     vault: Vault;
+    setting: AppSetting;
   }
 
   export class Plugin {
     app: App;
+    manifest: PluginManifest;
     loadData(): Promise<unknown>;
     saveData(data: unknown): Promise<void>;
     addRibbonIcon(icon: string, title: string, callback: (evt: MouseEvent) => unknown): HTMLElement;
     addCommand(command: { id: string; name: string; callback: () => unknown }): void;
     addSettingTab(tab: PluginSettingTab): void;
     registerEvent(eventRef: EventRef): void;
+  }
+
+  export interface AppSetting {
+    open(): void;
+    openTabById(id: string): void;
+  }
+
+  export interface PluginManifest {
+    id: string;
   }
 
   export class TAbstractFile {
