@@ -109,6 +109,108 @@
   width: 16px;
 }
 
+.nox-sync-vault-manager {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 18px 0;
+}
+
+.nox-sync-vault-manager-header,
+.nox-sync-modal-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.nox-sync-vault-manager-header h3,
+.nox-sync-modal-header h2 {
+  margin: 0;
+}
+
+.nox-sync-vault-manager-actions,
+.nox-sync-vault-row-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nox-sync-vault-select-row {
+  margin-top: 12px;
+}
+
+.nox-sync-vault-select-row select {
+  width: 100%;
+}
+
+.nox-sync-vault-list,
+.nox-sync-deleted-vault-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.nox-sync-vault-row,
+.nox-sync-deleted-vault-row {
+  align-items: center;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px;
+}
+
+.nox-sync-vault-row.is-selected {
+  border-color: var(--interactive-accent);
+}
+
+.nox-sync-vault-info,
+.nox-sync-vault-info-static {
+  background: transparent;
+  border: 0;
+  color: var(--text-normal);
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.nox-sync-vault-info {
+  cursor: pointer;
+}
+
+.nox-sync-vault-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.nox-sync-vault-meta,
+.nox-sync-vault-empty,
+.nox-sync-vault-selected-label {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.nox-sync-vault-selected-label {
+  white-space: nowrap;
+}
+
+.nox-sync-icon-button {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.nox-sync-danger-icon {
+  color: var(--text-error);
+}
+
+.nox-sync-deleted-vaults-modal {
+  min-width: min(520px, 92vw);
+}
+
 .nox-sync-conflict-modal {
   min-width: min(920px, 92vw);
 }
@@ -215,6 +317,22 @@
 }
 
 @media (max-width: 720px) {
+  .nox-sync-vault-manager-header,
+  .nox-sync-vault-row,
+  .nox-sync-deleted-vault-row {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .nox-sync-vault-manager-header {
+    flex-direction: column;
+  }
+
+  .nox-sync-vault-manager-actions,
+  .nox-sync-vault-row-actions {
+    justify-content: flex-start;
+  }
+
   .nox-sync-conflict-layout,
   .nox-sync-conflict-columns {
     grid-template-columns: 1fr;

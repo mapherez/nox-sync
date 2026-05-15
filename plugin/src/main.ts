@@ -22,6 +22,7 @@ interface NoxSyncSettings {
   localVaultId: string;
   selectedVaultId: string;
   backendVaults: BackendVault[];
+  deletedBackendVaults: BackendVault[];
   vaultStates: Record<string, VaultSyncState>;
   lastKnownServerRevision: number;
   knownFileHashes: Record<string, string>;
@@ -41,10 +42,14 @@ interface BackendVault {
   name: string;
   revision: number;
   updatedAt: string;
+  deletedAt?: string;
+  status?: string;
+  sizeBytes?: number;
 }
 
 interface BackendVaultListResponse {
   vaults: BackendVault[];
+  deletedVaults?: BackendVault[];
 }
 
 interface VaultSyncState {
@@ -160,6 +165,7 @@ const DEFAULT_SETTINGS: NoxSyncSettings = {
   localVaultId: "",
   selectedVaultId: "",
   backendVaults: [],
+  deletedBackendVaults: [],
   vaultStates: {},
   lastKnownServerRevision: 0,
   knownFileHashes: {},
@@ -293,6 +299,7 @@ export default class NoxSyncPlugin extends Plugin {
       localVaultId: loaded.localVaultId || loaded.vaultId || "",
       selectedVaultId,
       backendVaults: [...(loaded.backendVaults ?? [])],
+      deletedBackendVaults: [...(loaded.deletedBackendVaults ?? [])],
       vaultStates,
       ...cloneVaultSyncState(vaultStates[selectedVaultId] ?? emptyVaultSyncState()),
     };
@@ -353,7 +360,9 @@ export default class NoxSyncPlugin extends Plugin {
     try {
       const response = await this.requestJSON<BackendVaultListResponse>("/v1/vaults", "GET");
       const vaults = response.vaults ?? [];
+      const deletedVaults = response.deletedVaults ?? [];
       this.settings.backendVaults = vaults;
+      this.settings.deletedBackendVaults = deletedVaults;
 
       const selected = this.settings.selectedVaultId.trim();
       if (selected && !vaults.some((vault) => vault.vaultId === selected)) {
@@ -408,6 +417,72 @@ export default class NoxSyncPlugin extends Plugin {
       }
       new Notice("NoX Sync could not create the backend vault.");
     }
+  }
+
+  async deleteBackendVault(vaultId: string): Promise<void> {
+    if (!this.hasCredentials()) {
+      new Notice("NoX Sync server URL and API key are required.");
+      return;
+    }
+
+    const query = new URLSearchParams({ vaultId }).toString();
+    try {
+      await this.requestJSON<{ ok: boolean }>(`/v1/vaults?${query}`, "DELETE");
+      if (this.settings.selectedVaultId.trim() === vaultId) {
+        await this.selectBackendVault("");
+      }
+      await this.refreshBackendVaults(true);
+      new Notice("NoX Sync backend vault deleted.");
+    } catch (error) {
+      this.handleVaultLifecycleError(error, "NoX Sync could not delete the backend vault.");
+    }
+  }
+
+  async restoreBackendVault(vaultId: string): Promise<void> {
+    if (!this.hasCredentials()) {
+      new Notice("NoX Sync server URL and API key are required.");
+      return;
+    }
+
+    const query = new URLSearchParams({ vaultId }).toString();
+    try {
+      await this.requestJSON<{ ok: boolean }>(`/v1/vaults/restore?${query}`, "POST");
+      await this.refreshBackendVaults(true);
+      new Notice("NoX Sync backend vault restored.");
+    } catch (error) {
+      this.handleVaultLifecycleError(error, "NoX Sync could not restore the backend vault.");
+    }
+  }
+
+  async purgeBackendVault(vaultId: string): Promise<void> {
+    if (!this.hasCredentials()) {
+      new Notice("NoX Sync server URL and API key are required.");
+      return;
+    }
+
+    const query = new URLSearchParams({ vaultId }).toString();
+    try {
+      await this.requestJSON<{ ok: boolean }>(`/v1/vaults/purge?${query}`, "POST");
+      delete this.settings.vaultStates[vaultId];
+      if (this.settings.selectedVaultId.trim() === vaultId) {
+        await this.selectBackendVault("");
+      }
+      await this.refreshBackendVaults(true);
+      await this.saveSettings();
+      new Notice("NoX Sync backend vault permanently deleted.");
+    } catch (error) {
+      this.handleVaultLifecycleError(error, "NoX Sync could not permanently delete the backend vault.");
+    }
+  }
+
+  private handleVaultLifecycleError(error: unknown, fallback: string): void {
+    if (error instanceof BackendRequestError) {
+      const action = classifyBackendError(error);
+      this.setButtonState(action.state, action.detail);
+      new Notice(action.notice);
+      return;
+    }
+    new Notice(fallback);
   }
 
   async testConnection(): Promise<void> {
@@ -2097,6 +2172,133 @@ class ClearSyncTrashModal extends Modal {
   }
 }
 
+class BackendVaultConfirmModal extends Modal {
+  constructor(
+    app: App,
+    private readonly title: string,
+    private readonly message: string,
+    private readonly iconName: string,
+    private readonly onConfirm: () => Promise<void>,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: this.title });
+    contentEl.createEl("p", { text: this.message });
+
+    const actions = contentEl.createEl("div", { cls: "nox-sync-modal-actions" });
+    const yesButton = actions.createEl("button");
+    yesButton.type = "button";
+    yesButton.addClass("mod-warning");
+    setIcon(yesButton, this.iconName);
+    yesButton.createEl("span", { text: "Yes" });
+    yesButton.onclick = async () => {
+      yesButton.disabled = true;
+      try {
+        await this.onConfirm();
+        this.close();
+      } catch (error) {
+        yesButton.disabled = false;
+        const message = error instanceof Error ? error.message : "NoX Sync action failed.";
+        new Notice(message);
+      }
+    };
+
+    const noButton = actions.createEl("button", { text: "No" });
+    noButton.type = "button";
+    noButton.onclick = () => this.close();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+class DeletedBackendVaultsModal extends Modal {
+  constructor(
+    app: App,
+    private readonly plugin: NoxSyncPlugin,
+    private readonly onChanged: () => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.render();
+  }
+
+  private render(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("nox-sync-deleted-vaults-modal");
+
+    const header = contentEl.createEl("div", { cls: "nox-sync-modal-header" });
+    header.createEl("h2", { text: "Deleted Backend Vaults" });
+    const closeButton = header.createEl("button", { cls: "clickable-icon nox-sync-icon-button" });
+    closeButton.type = "button";
+    closeButton.setAttr("aria-label", "Close");
+    closeButton.setAttr("title", "Close");
+    setIcon(closeButton, "x");
+    closeButton.onclick = () => this.close();
+
+    const vaults = this.plugin.settings.deletedBackendVaults;
+    if (vaults.length === 0) {
+      contentEl.createEl("p", { text: "No deleted backend vaults can be restored.", cls: "setting-item-description" });
+      return;
+    }
+
+    const list = contentEl.createEl("div", { cls: "nox-sync-deleted-vault-list" });
+    for (const vault of vaults) {
+      const row = list.createEl("div", { cls: "nox-sync-deleted-vault-row" });
+      const info = row.createEl("div", { cls: "nox-sync-vault-info-static" });
+      info.createEl("span", { text: vault.name, cls: "nox-sync-vault-name" });
+      info.createEl("span", {
+        text: `${formatBytes(vault.sizeBytes ?? 0)} · deleted vault`,
+        cls: "nox-sync-vault-meta",
+      });
+
+      const actions = row.createEl("div", { cls: "nox-sync-vault-row-actions" });
+      const restoreButton = actions.createEl("button", { cls: "clickable-icon nox-sync-icon-button" });
+      restoreButton.type = "button";
+      restoreButton.setAttr("aria-label", `Restore ${vault.name}`);
+      restoreButton.setAttr("title", "Restore vault");
+      setIcon(restoreButton, "archive-restore");
+      restoreButton.onclick = async () => {
+        restoreButton.disabled = true;
+        await this.plugin.restoreBackendVault(vault.vaultId);
+        this.onChanged();
+        this.render();
+      };
+
+      const purgeButton = actions.createEl("button", { cls: "clickable-icon nox-sync-icon-button nox-sync-danger-icon" });
+      purgeButton.type = "button";
+      purgeButton.setAttr("aria-label", `Permanently delete ${vault.name}`);
+      purgeButton.setAttr("title", "Permanently delete vault");
+      setIcon(purgeButton, "trash-2");
+      purgeButton.onclick = () => {
+        new BackendVaultConfirmModal(
+          this.app,
+          "Permanently Delete Backend Vault",
+          `Permanently delete "${vault.name}"? This vault cannot be restored afterwards.`,
+          "trash-2",
+          async () => {
+            await this.plugin.purgeBackendVault(vault.vaultId);
+            this.onChanged();
+            this.render();
+          },
+        ).open();
+      };
+    }
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 class NoxSyncSettingTab extends PluginSettingTab {
   plugin: NoxSyncPlugin;
 
@@ -2161,35 +2363,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
-      .setName("Backend vault")
-      .setDesc("Remote vault on this backend for the currently opened Obsidian vault.")
-      .addDropdown((dropdown) => {
-        dropdown.addOption("", "Select a backend vault");
-        for (const vault of this.plugin.settings.backendVaults) {
-          dropdown.addOption(vault.vaultId, `${vault.name} (revision ${vault.revision})`);
-        }
-        dropdown.setValue(this.plugin.settings.selectedVaultId);
-        dropdown.onChange(async (value) => {
-          await this.plugin.selectBackendVault(value);
-          this.display();
-        });
-      })
-      .addButton((button) =>
-        button.setButtonText("Refresh vaults").onClick(async () => {
-          await this.plugin.refreshBackendVaults();
-          this.display();
-        }),
-      )
-      .addButton((button) =>
-        button
-          .setButtonText("Create backend vault")
-          .setCta()
-          .onClick(async () => {
-            await this.plugin.createBackendVault();
-            this.display();
-          }),
-      );
+    this.renderBackendVaultManager(containerEl);
 
     new Setting(containerEl)
       .setName("Sync hidden files")
@@ -2242,6 +2416,113 @@ class NoxSyncSettingTab extends PluginSettingTab {
       }
     };
     void updateTrashDescription();
+  }
+
+  private renderBackendVaultManager(containerEl: HTMLElement): void {
+    const section = containerEl.createEl("div", { cls: "nox-sync-vault-manager" });
+    const header = section.createEl("div", { cls: "nox-sync-vault-manager-header" });
+    const title = header.createEl("div");
+    title.createEl("h3", { text: "Backend vault" });
+    title.createEl("p", {
+      text: "Remote vault on this backend for the currently opened Obsidian vault.",
+      cls: "setting-item-description",
+    });
+
+    const actions = header.createEl("div", { cls: "nox-sync-vault-manager-actions" });
+    const refreshButton = actions.createEl("button", { cls: "clickable-icon nox-sync-icon-button" });
+    refreshButton.type = "button";
+    refreshButton.setAttr("aria-label", "Refresh vaults");
+    refreshButton.setAttr("title", "Refresh vaults");
+    setIcon(refreshButton, "refresh-cw");
+    refreshButton.onclick = async () => {
+      await this.plugin.refreshBackendVaults();
+      this.display();
+    };
+
+    const restoreButton = actions.createEl("button", { cls: "clickable-icon nox-sync-icon-button" });
+    restoreButton.type = "button";
+    restoreButton.setAttr("aria-label", "Restore deleted vaults");
+    restoreButton.setAttr("title", "Restore deleted vaults");
+    restoreButton.disabled = this.plugin.settings.deletedBackendVaults.length === 0;
+    setIcon(restoreButton, "archive-restore");
+    restoreButton.onclick = () => {
+      new DeletedBackendVaultsModal(this.app, this.plugin, () => this.display()).open();
+    };
+
+    const createButton = actions.createEl("button", { text: "Create backend vault" });
+    createButton.type = "button";
+    createButton.addClass("mod-cta");
+    createButton.onclick = async () => {
+      await this.plugin.createBackendVault();
+      this.display();
+    };
+
+    const selectRow = section.createEl("div", { cls: "nox-sync-vault-select-row" });
+    const dropdown = selectRow.createEl("select");
+    const placeholder = dropdown.createEl("option", { text: "Select a backend vault" });
+    placeholder.value = "";
+    for (const vault of this.plugin.settings.backendVaults) {
+      const option = dropdown.createEl("option", {
+        text: `${vault.name} (revision ${vault.revision}, ${formatBytes(vault.sizeBytes ?? 0)})`,
+      });
+      option.value = vault.vaultId;
+    }
+    dropdown.value = this.plugin.settings.selectedVaultId;
+    dropdown.onchange = async () => {
+      await this.plugin.selectBackendVault(dropdown.value);
+      this.display();
+    };
+
+    const list = section.createEl("div", { cls: "nox-sync-vault-list" });
+    if (this.plugin.settings.backendVaults.length === 0) {
+      list.createEl("p", {
+        text: "No backend vaults yet. Create one for this Obsidian vault.",
+        cls: "nox-sync-vault-empty",
+      });
+      return;
+    }
+
+    for (const vault of this.plugin.settings.backendVaults) {
+      const selected = vault.vaultId === this.plugin.settings.selectedVaultId;
+      const row = list.createEl("div", {
+        cls: selected ? "nox-sync-vault-row is-selected" : "nox-sync-vault-row",
+      });
+
+      const info = row.createEl("button", { cls: "nox-sync-vault-info" });
+      info.type = "button";
+      info.onclick = async () => {
+        await this.plugin.selectBackendVault(vault.vaultId);
+        this.display();
+      };
+      info.createEl("span", { text: vault.name, cls: "nox-sync-vault-name" });
+      info.createEl("span", {
+        text: `Revision ${vault.revision} · ${formatBytes(vault.sizeBytes ?? 0)}`,
+        cls: "nox-sync-vault-meta",
+      });
+
+      const rowActions = row.createEl("div", { cls: "nox-sync-vault-row-actions" });
+      if (selected) {
+        rowActions.createEl("span", { text: "Selected", cls: "nox-sync-vault-selected-label" });
+      }
+
+      const deleteButton = rowActions.createEl("button", { cls: "clickable-icon nox-sync-icon-button nox-sync-danger-icon" });
+      deleteButton.type = "button";
+      deleteButton.setAttr("aria-label", `Delete ${vault.name}`);
+      deleteButton.setAttr("title", "Delete vault");
+      setIcon(deleteButton, "trash-2");
+      deleteButton.onclick = () => {
+        new BackendVaultConfirmModal(
+          this.app,
+          "Delete Backend Vault",
+          `Delete "${vault.name}"? This vault will be hidden and blocked from future sync, but it can be restored later.`,
+          "trash-2",
+          async () => {
+            await this.plugin.deleteBackendVault(vault.vaultId);
+            this.display();
+          },
+        ).open();
+      };
+    }
   }
 }
 

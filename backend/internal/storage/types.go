@@ -61,9 +61,10 @@ type Vault struct {
 	UserID    string `json:"-"`
 	Name      string `json:"name"`
 	Revision  int64  `json:"revision"`
-	Status    string `json:"-"`
+	Status    string `json:"status,omitempty"`
 	UpdatedAt string `json:"updatedAt"`
-	DeletedAt string `json:"-"`
+	DeletedAt string `json:"deletedAt,omitempty"`
+	SizeBytes int64  `json:"sizeBytes"`
 }
 
 // CreateVaultRequest is used by the plugin to create a remote vault.
@@ -73,7 +74,8 @@ type CreateVaultRequest struct {
 
 // VaultListResponse is returned to the plugin settings UI.
 type VaultListResponse struct {
-	Vaults []Vault `json:"vaults"`
+	Vaults        []Vault `json:"vaults"`
+	DeletedVaults []Vault `json:"deletedVaults,omitempty"`
 }
 
 // BeginSyncRequest contains the client identity for acquiring a vault sync lock.

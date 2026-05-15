@@ -218,6 +218,26 @@ func (s *Store) SetUserRole(ctx context.Context, userID string, role string) err
 	return nil
 }
 
+// DeleteUser permanently removes an allowlisted user and all owned sync data.
+func (s *Store) DeleteUser(ctx context.Context, userID string) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return fmt.Errorf("%w: userId is required", ErrBadRequest)
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
+	if err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check user delete: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // CreateOAuthState stores a short-lived OAuth state token and returns the raw token.
 func (s *Store) CreateOAuthState(ctx context.Context, redirectTo string) (string, error) {
 	state, err := randomID("state_")

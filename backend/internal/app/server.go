@@ -38,7 +38,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/vault-dashboard/users/add", s.handleAddUser)
 	mux.HandleFunc("/vault-dashboard/users/status", s.handleSetUserStatus)
 	mux.HandleFunc("/vault-dashboard/users/role", s.handleSetUserRole)
+	mux.HandleFunc("/vault-dashboard/users/delete", s.handleDeleteUser)
 	mux.HandleFunc("/vault-dashboard/vaults/delete", s.handleDeleteVault)
+	mux.HandleFunc("/vault-dashboard/vaults/restore", s.handleRestoreVault)
+	mux.HandleFunc("/vault-dashboard/vaults/purge", s.handlePurgeVault)
 	mux.HandleFunc("/vault-dashboard/vaults/download", s.handleDownloadVaultZip)
 	mux.HandleFunc("/auth/google/start", s.handleGoogleStart)
 	mux.HandleFunc("/auth/google/callback", s.handleGoogleCallback)
@@ -46,6 +49,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/health", s.handleHealth)
 	mux.HandleFunc("/v1/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("/v1/vaults", s.handlePluginVaults)
+	mux.HandleFunc("/v1/vaults/restore", s.handlePluginRestoreVault)
+	mux.HandleFunc("/v1/vaults/purge", s.handlePluginPurgeVault)
 	mux.HandleFunc("/v1/status", s.handleStatus)
 	mux.HandleFunc("/v1/sync/events", s.handleSyncEvents)
 	mux.HandleFunc("/v1/sync/begin", s.handleBeginSync)
@@ -108,7 +113,12 @@ func (s *Server) handlePluginVaults(w http.ResponseWriter, r *http.Request) {
 			writeStorageError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, storage.VaultListResponse{Vaults: vaults})
+		deletedVaults, err := s.store.ListDeletedVaults(r.Context(), user.ID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, storage.VaultListResponse{Vaults: vaults, DeletedVaults: deletedVaults})
 	case http.MethodPost:
 		var req storage.CreateVaultRequest
 		if !decodeJSON(w, r, &req) {
@@ -120,10 +130,64 @@ func (s *Server) handlePluginVaults(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusCreated, vault)
+	case http.MethodDelete:
+		vaultID, ok := vaultIDFromQuery(w, r)
+		if !ok {
+			return
+		}
+		if err := s.store.SoftDeleteVault(r.Context(), user.ID, vaultID); err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	default:
-		w.Header().Set("Allow", "GET, POST")
+		w.Header().Set("Allow", "GET, POST, DELETE")
 		writeJSONError(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "Method not allowed.")
 	}
+}
+
+func (s *Server) handlePluginRestoreVault(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSONError(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "Method not allowed.")
+		return
+	}
+
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
+		return
+	}
+	vaultID, ok := vaultIDFromQuery(w, r)
+	if !ok {
+		return
+	}
+	if err := s.store.RestoreVault(r.Context(), user.ID, vaultID); err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handlePluginPurgeVault(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSONError(w, http.StatusMethodNotAllowed, "BAD_REQUEST", "Method not allowed.")
+		return
+	}
+
+	user, ok := s.requireAPIUser(w, r)
+	if !ok {
+		return
+	}
+	vaultID, ok := vaultIDFromQuery(w, r)
+	if !ok {
+		return
+	}
+	if err := s.store.PurgeDeletedVault(r.Context(), user.ID, vaultID); err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

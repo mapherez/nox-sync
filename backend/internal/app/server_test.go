@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -126,6 +128,89 @@ func TestRotateAPIKeyInvalidatesPreviousKey(t *testing.T) {
 	}
 	if !validNew {
 		t.Fatalf("expected new key to be valid")
+	}
+}
+
+func TestPluginVaultLifecycleCanDeleteRestoreAndPurge(t *testing.T) {
+	server, store, user, vault := newTestServer(t)
+	apiKey, err := store.CurrentAPIKey(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("load api key: %v", err)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/vaults?vaultId="+vault.ID, nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+apiKey)
+	deleteRes := httptest.NewRecorder()
+	server.Routes().ServeHTTP(deleteRes, deleteReq)
+	if deleteRes.Code != http.StatusOK {
+		t.Fatalf("expected delete status %d, got %d", http.StatusOK, deleteRes.Code)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/vaults", nil)
+	listReq.Header.Set("Authorization", "Bearer "+apiKey)
+	listRes := httptest.NewRecorder()
+	server.Routes().ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listRes.Code)
+	}
+	var listed storage.VaultListResponse
+	if err := json.NewDecoder(listRes.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode vault list: %v", err)
+	}
+	if len(listed.Vaults) != 0 || len(listed.DeletedVaults) != 1 {
+		t.Fatalf("expected one deleted vault, got active=%d deleted=%d", len(listed.Vaults), len(listed.DeletedVaults))
+	}
+
+	restoreReq := httptest.NewRequest(http.MethodPost, "/v1/vaults/restore?vaultId="+vault.ID, nil)
+	restoreReq.Header.Set("Authorization", "Bearer "+apiKey)
+	restoreRes := httptest.NewRecorder()
+	server.Routes().ServeHTTP(restoreRes, restoreReq)
+	if restoreRes.Code != http.StatusOK {
+		t.Fatalf("expected restore status %d, got %d", http.StatusOK, restoreRes.Code)
+	}
+	if _, err := store.VaultByID(context.Background(), user.ID, vault.ID); err != nil {
+		t.Fatalf("expected restored vault to load: %v", err)
+	}
+
+	deleteReq = httptest.NewRequest(http.MethodDelete, "/v1/vaults?vaultId="+vault.ID, nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+apiKey)
+	deleteRes = httptest.NewRecorder()
+	server.Routes().ServeHTTP(deleteRes, deleteReq)
+	if deleteRes.Code != http.StatusOK {
+		t.Fatalf("expected second delete status %d, got %d", http.StatusOK, deleteRes.Code)
+	}
+
+	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/vaults/purge?vaultId="+vault.ID, nil)
+	purgeReq.Header.Set("Authorization", "Bearer "+apiKey)
+	purgeRes := httptest.NewRecorder()
+	server.Routes().ServeHTTP(purgeRes, purgeReq)
+	if purgeRes.Code != http.StatusOK {
+		t.Fatalf("expected purge status %d, got %d", http.StatusOK, purgeRes.Code)
+	}
+	if _, err := store.VaultByID(context.Background(), user.ID, vault.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected purged vault to be gone, got %v", err)
+	}
+}
+
+func TestAdminDashboardCannotDeleteAdminUser(t *testing.T) {
+	server, store, user, _ := newTestServer(t)
+	sessionToken, err := store.CreateWebSession(context.Background(), user.ID, webSessionDuration)
+	if err != nil {
+		t.Fatalf("create web session: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/vault-dashboard/users/delete", strings.NewReader("userId="+user.ID))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionToken})
+	res := httptest.NewRecorder()
+
+	server.Routes().ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
+	}
+	if _, err := store.UserByID(context.Background(), user.ID); err != nil {
+		t.Fatalf("expected admin user to remain: %v", err)
 	}
 }
 

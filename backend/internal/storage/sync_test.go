@@ -89,6 +89,28 @@ func TestUserCannotSyncAnotherUsersVault(t *testing.T) {
 	}
 }
 
+func TestPurgeDeletedVaultRemovesUnreferencedBlob(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	content := []byte("purge me")
+	hash := sha256Hex(content)
+
+	commitFileForTest(t, store, "client_a", 0, "purge.md", content)
+	if _, err := os.Stat(store.BlobPath(hash)); err != nil {
+		t.Fatalf("expected blob to exist before purge: %v", err)
+	}
+
+	if err := store.SoftDeleteVault(ctx, testUserID, testVaultID); err != nil {
+		t.Fatalf("soft delete vault: %v", err)
+	}
+	if err := store.PurgeDeletedVault(ctx, testUserID, testVaultID); err != nil {
+		t.Fatalf("purge deleted vault: %v", err)
+	}
+	if _, err := os.Stat(store.BlobPath(hash)); !os.IsNotExist(err) {
+		t.Fatalf("expected unreferenced blob to be removed, got %v", err)
+	}
+}
+
 func TestFirstUploadCommitCreatesDownloadableBlob(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
