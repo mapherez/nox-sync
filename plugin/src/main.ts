@@ -2237,12 +2237,6 @@ class DeletedBackendVaultsModal extends Modal {
 
     const header = contentEl.createEl("div", { cls: "nox-sync-modal-header" });
     header.createEl("h2", { text: "Deleted Backend Vaults" });
-    const closeButton = header.createEl("button", { cls: "clickable-icon nox-sync-icon-button" });
-    closeButton.type = "button";
-    closeButton.setAttr("aria-label", "Close");
-    closeButton.setAttr("title", "Close");
-    setIcon(closeButton, "x");
-    closeButton.onclick = () => this.close();
 
     const vaults = this.plugin.settings.deletedBackendVaults;
     if (vaults.length === 0) {
