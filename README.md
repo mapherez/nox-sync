@@ -1,4 +1,4 @@
-# NoX Sync
+# NoX Sync - an [Obsidian](https://obsidian.md/) plugin
 
 NoX Sync is a private, self-hosted sync system for Obsidian vaults. It is designed for people who want a backend they control, Google-authenticated dashboard access, per-user API keys, multiple remote vaults, and explicit manual sync instead of background cloud synchronization.
 
