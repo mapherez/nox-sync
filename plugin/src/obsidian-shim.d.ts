@@ -83,6 +83,7 @@ declare module "obsidian" {
 
   export class ButtonComponent {
     setButtonText(text: string): this;
+    setIcon(icon: string): this;
     setCta(): this;
     onClick(callback: () => unknown): this;
   }

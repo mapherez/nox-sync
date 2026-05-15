@@ -1277,6 +1277,37 @@ export default class NoxSyncPlugin extends Plugin {
     await this.saveSettings();
   }
 
+  syncTrashStats(): { files: number; bytes: number } {
+    let files = 0;
+    let bytes = 0;
+
+    for (const file of this.app.vault.getFiles()) {
+      const normalizedPath = normalizeVaultPath(file.path);
+      if (!normalizedPath || !isNoxSyncTrashPath(normalizedPath)) {
+        continue;
+      }
+
+      files++;
+      bytes += file.stat?.size ?? 0;
+    }
+
+    return { files, bytes };
+  }
+
+  async clearSyncTrash(): Promise<void> {
+    const trashRoot = this.app.vault.getAbstractFileByPath(NOX_SYNC_TRASH_ROOT);
+    if (!trashRoot) {
+      new Notice("NoX Sync trash is already empty.");
+      return;
+    }
+    if (!(trashRoot instanceof TFolder)) {
+      throw new Error(`${NOX_SYNC_TRASH_ROOT} exists but is not a folder.`);
+    }
+
+    await this.deleteFolderRecursive(trashRoot);
+    new Notice("NoX Sync trash cleared.");
+  }
+
   private async applyCommittedSyncState(
     manifest: LocalManifest,
     plan: SyncPlanResponse,
@@ -1503,6 +1534,18 @@ export default class NoxSyncPlugin extends Plugin {
 
       await this.app.vault.delete(folder, false);
     }
+  }
+
+  private async deleteFolderRecursive(folder: TFolder): Promise<void> {
+    for (const child of [...folder.children]) {
+      if (child instanceof TFolder) {
+        await this.deleteFolderRecursive(child);
+      } else {
+        await this.app.vault.delete(child, true);
+      }
+    }
+
+    await this.app.vault.delete(folder, true);
   }
 
   private nextSyncTrashPath(path: string): string {
@@ -1977,6 +2020,51 @@ class ConflictResolutionModal extends Modal {
   }
 }
 
+class ClearSyncTrashModal extends Modal {
+  constructor(
+    app: App,
+    private readonly plugin: NoxSyncPlugin,
+    private readonly onCleared: () => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    const stats = this.plugin.syncTrashStats();
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Clear NoX Sync Trash" });
+    contentEl.createEl("p", {
+      text: `${formatBytes(stats.bytes)} in ${formatCount(stats.files, "file")} will be permanently removed from ${NOX_SYNC_TRASH_ROOT}.`,
+    });
+
+    const actions = contentEl.createEl("div", { cls: "nox-sync-modal-actions" });
+    const yesButton = actions.createEl("button");
+    yesButton.type = "button";
+    yesButton.addClass("mod-warning");
+    setIcon(yesButton, "trash-2");
+    yesButton.createEl("span", { text: "Yes" });
+    yesButton.onclick = async () => {
+      try {
+        await this.plugin.clearSyncTrash();
+        this.onCleared();
+        this.close();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "NoX Sync could not clear trash.";
+        new Notice(message);
+      }
+    };
+
+    const noButton = actions.createEl("button", { text: "No" });
+    noButton.type = "button";
+    noButton.onclick = () => this.close();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 class NoxSyncSettingTab extends PluginSettingTab {
   plugin: NoxSyncPlugin;
 
@@ -2085,6 +2173,24 @@ class NoxSyncSettingTab extends PluginSettingTab {
             void this.plugin.testConnection();
           }),
       );
+
+    const trashStats = this.plugin.syncTrashStats();
+    new Setting(containerEl)
+      .setName("Local NoX Sync trash")
+      .setDesc(`${formatBytes(trashStats.bytes)} in ${formatCount(trashStats.files, "file")}.`)
+      .addButton((button) =>
+        button.setButtonText("Refresh").onClick(() => {
+          this.display();
+        }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("Clear trash")
+          .setIcon("trash-2")
+          .onClick(() => {
+            new ClearSyncTrashModal(this.app, this.plugin, () => this.display()).open();
+          }),
+      );
   }
 }
 
@@ -2191,6 +2297,27 @@ function slugForConflictName(value: string): string {
 
 function shortHash(value: string): string {
   return value ? value.slice(0, 12) : "unknown";
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatCount(count: number, label: string): string {
+  return `${count} ${label}${count === 1 ? "" : "s"}`;
 }
 
 function ensureResponseOK(response: { status: number; json: unknown }): void {

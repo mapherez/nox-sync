@@ -155,6 +155,21 @@
   cursor: pointer;
 }
 
+.nox-sync-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.nox-sync-modal-actions button {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 6px;
+}
+
 .nox-sync-conflict-note {
   color: var(--text-muted);
 }
