@@ -16,6 +16,8 @@ The plugin reached the backend, but no remote vault is selected.
 
 Open NoX Sync settings, use **Refresh vaults**, then select a backend vault or create one from the current Obsidian vault name. If a previously selected vault was deleted from the dashboard, select a different vault before syncing again.
 
+When no backend vault is selected, clicking the NoX Sync ribbon icon opens the NoX Sync settings tab directly.
+
 ## `SERVER_UNREACHABLE`
 
 The plugin could not reach the backend.
@@ -57,6 +59,12 @@ Common causes include interrupted uploads, stale sessions, hash mismatches, or m
 ## Stale Locks
 
 During sync, the plugin sends regular heartbeats. If Obsidian closes, the network drops, or a sync hangs, heartbeats stop. The backend marks the lock stale after expiry, removes abandoned staging content, and broadcasts the stale state to connected clients.
+
+## Local NoX Sync Trash
+
+NoX Sync moves replaced or deleted local files into `.nox-sync-trash/` before applying remote changes. This is local safety storage only; it is excluded from sync and is not uploaded to the backend.
+
+If it grows large, open NoX Sync settings and use the local trash size and clear-trash controls. Clearing the trash permanently removes `.nox-sync-trash/` from the currently opened vault.
 
 ## Backups
 

@@ -2,13 +2,7 @@
 
 This guide covers the expected first-run path for a self-hosted NoX Sync backend and the Obsidian plugin.
 
-## 1. Start The Backend
-
-From a folder containing `docker-compose.yml`:
-
-```bash
-docker compose up -d
-```
+## 1. Configure And Start The Backend
 
 The backend listens on port `8080` inside the container. The provided Compose files expose it on host port `5710`.
 
@@ -25,6 +19,12 @@ The Google OAuth redirect URL must be:
 
 ```text
 https://sync.example.com/auth/google/callback
+```
+
+Then start the backend from a folder containing `docker-compose.yml`:
+
+```bash
+docker compose up -d
 ```
 
 ## 2. Open The Dashboard
@@ -79,6 +79,12 @@ In Obsidian, open NoX Sync settings and set:
 Use **Test connection** to verify the backend and API key. Then use **Refresh vaults** and either select an existing backend vault or create a backend vault from the current Obsidian vault name.
 
 The selected backend vault is the remote sync target for this local Obsidian vault. Switching the selected backend vault also switches the plugin's local sync state, including known hashes, known revisions, pending deletes, and pending conflicts.
+
+If the ribbon button shows that no backend vault is selected, clicking it opens the NoX Sync settings tab directly.
+
+The client name is display metadata only. It is shown when this device owns a sync lock and is used in conflict-copy filenames. Changing it does not break existing backend vaults, API keys, or sync identity.
+
+The settings page also shows the local `.nox-sync-trash/` size and includes a clear-trash action for files NoX Sync preserved during local replacement or delete operations.
 
 ## 5. Manually Sync
 

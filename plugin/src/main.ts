@@ -2121,10 +2121,10 @@ class NoxSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Server URL")
-      .setDesc("Backend URL, for example http://localhost:8080.")
+      .setDesc("Backend URL, for example http://localhost:5710.")
       .addText((text) =>
         text
-          .setPlaceholder("http://localhost:8080")
+          .setPlaceholder("http://localhost:5710")
           .setValue(this.plugin.settings.serverUrl)
           .onChange(async (value) => {
             this.plugin.settings.serverUrl = value.trim();

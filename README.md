@@ -26,23 +26,26 @@ NoX Sync does not use external databases, external sync providers, vault sharing
 - Current and previous backend file versions plus tombstones for deletes.
 - Explicit Markdown and binary conflict handling.
 - Safe local replacement/delete behavior through `.nox-sync-trash/`.
+- Settings shortcut from the ribbon when no backend vault is selected.
+- Local `.nox-sync-trash/` size display and clear-trash action.
+- Settings-page support link for donations.
 - Plugin-local settings, credentials, sync state, and trash excluded from sync.
 
 ## Quick Start
 
-Start the backend with Docker Compose:
-
-```bash
-docker compose up -d
-```
-
-Set the required dashboard environment variables before production use:
+Set the required dashboard environment variables before starting the backend in production:
 
 ```bash
 NOX_SYNC_PUBLIC_URL=https://sync.example.com
 NOX_SYNC_GOOGLE_CLIENT_ID=...
 NOX_SYNC_GOOGLE_CLIENT_SECRET=...
 NOX_SYNC_ADMIN_EMAILS=you@example.com
+```
+
+Start the backend with Docker Compose:
+
+```bash
+docker compose up -d
 ```
 
 Open the dashboard:
