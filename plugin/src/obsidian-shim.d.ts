@@ -43,6 +43,7 @@ declare module "obsidian" {
   export interface EventRef {}
 
   export interface Vault {
+    adapter: DataAdapter;
     getName(): string;
     getFiles(): TFile[];
     getAbstractFileByPath(path: string): TAbstractFile | null;
@@ -55,6 +56,26 @@ declare module "obsidian" {
     on(name: "modify", callback: (file: TFile) => unknown): EventRef;
     on(name: "delete", callback: (file: TAbstractFile) => unknown): EventRef;
     on(name: "rename", callback: (file: TAbstractFile, oldPath: string) => unknown): EventRef;
+  }
+
+  export interface DataAdapter {
+    exists(path: string, sensitive?: boolean): Promise<boolean>;
+    list(path: string): Promise<ListedFiles>;
+    stat(path: string): Promise<FileStat | null>;
+    remove(path: string): Promise<void>;
+    rmdir(path: string, recursive?: boolean): Promise<void>;
+  }
+
+  export interface ListedFiles {
+    files: string[];
+    folders: string[];
+  }
+
+  export interface FileStat {
+    ctime: number;
+    mtime: number;
+    size: number;
+    type: "file" | "folder";
   }
 
   export class PluginSettingTab {

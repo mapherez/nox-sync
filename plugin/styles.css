@@ -73,6 +73,42 @@
   opacity: 0.65;
 }
 
+.nox-sync-settings-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.nox-sync-settings-header h2 {
+  margin: 0;
+}
+
+.nox-sync-donate-button {
+  align-items: center;
+  background: var(--interactive-accent);
+  border-radius: 6px;
+  color: var(--text-on-accent);
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+  line-height: 1;
+  padding: 7px 10px;
+  text-decoration: none;
+}
+
+.nox-sync-donate-button:hover {
+  color: var(--text-on-accent);
+  filter: brightness(1.05);
+  text-decoration: none;
+}
+
+.nox-sync-donate-button svg {
+  height: 16px;
+  width: 16px;
+}
+
 .nox-sync-conflict-modal {
   min-width: min(920px, 92vw);
 }

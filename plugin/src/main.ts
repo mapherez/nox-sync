@@ -1288,34 +1288,45 @@ export default class NoxSyncPlugin extends Plugin {
     await this.saveSettings();
   }
 
-  syncTrashStats(): { files: number; bytes: number } {
+  async syncTrashStats(): Promise<{ files: number; bytes: number }> {
+    if (!(await this.app.vault.adapter.exists(NOX_SYNC_TRASH_ROOT))) {
+      return { files: 0, bytes: 0 };
+    }
+
+    return this.syncTrashStatsForFolder(NOX_SYNC_TRASH_ROOT);
+  }
+
+  private async syncTrashStatsForFolder(folderPath: string): Promise<{ files: number; bytes: number }> {
     let files = 0;
     let bytes = 0;
+    const listed = await this.app.vault.adapter.list(folderPath);
 
-    for (const file of this.app.vault.getFiles()) {
-      const normalizedPath = normalizeVaultPath(file.path);
-      if (!normalizedPath || !isNoxSyncTrashPath(normalizedPath)) {
-        continue;
-      }
-
+    for (const filePath of listed.files) {
+      const stat = await this.app.vault.adapter.stat(filePath);
       files++;
-      bytes += file.stat?.size ?? 0;
+      bytes += stat?.size ?? 0;
+    }
+
+    for (const childFolder of listed.folders) {
+      const childStats = await this.syncTrashStatsForFolder(childFolder);
+      files += childStats.files;
+      bytes += childStats.bytes;
     }
 
     return { files, bytes };
   }
 
   async clearSyncTrash(): Promise<void> {
-    const trashRoot = this.app.vault.getAbstractFileByPath(NOX_SYNC_TRASH_ROOT);
-    if (!trashRoot) {
+    if (!(await this.app.vault.adapter.exists(NOX_SYNC_TRASH_ROOT))) {
       new Notice("NoX Sync trash is already empty.");
       return;
     }
-    if (!(trashRoot instanceof TFolder)) {
-      throw new Error(`${NOX_SYNC_TRASH_ROOT} exists but is not a folder.`);
-    }
 
-    await this.deleteFolderRecursive(trashRoot);
+    try {
+      await this.app.vault.adapter.rmdir(NOX_SYNC_TRASH_ROOT, true);
+    } catch {
+      await this.deleteAdapterFolderRecursive(NOX_SYNC_TRASH_ROOT);
+    }
     new Notice("NoX Sync trash cleared.");
   }
 
@@ -1547,16 +1558,18 @@ export default class NoxSyncPlugin extends Plugin {
     }
   }
 
-  private async deleteFolderRecursive(folder: TFolder): Promise<void> {
-    for (const child of [...folder.children]) {
-      if (child instanceof TFolder) {
-        await this.deleteFolderRecursive(child);
-      } else {
-        await this.app.vault.delete(child, true);
-      }
+  private async deleteAdapterFolderRecursive(folderPath: string): Promise<void> {
+    const listed = await this.app.vault.adapter.list(folderPath);
+
+    for (const filePath of listed.files) {
+      await this.app.vault.adapter.remove(filePath);
     }
 
-    await this.app.vault.delete(folder, true);
+    for (const childFolder of listed.folders) {
+      await this.deleteAdapterFolderRecursive(childFolder);
+    }
+
+    await this.app.vault.adapter.rmdir(folderPath, false);
   }
 
   private nextSyncTrashPath(path: string): string {
@@ -2041,13 +2054,21 @@ class ClearSyncTrashModal extends Modal {
   }
 
   onOpen(): void {
+    void this.render();
+  }
+
+  private async render(): Promise<void> {
     const { contentEl } = this;
-    const stats = this.plugin.syncTrashStats();
     contentEl.empty();
     contentEl.createEl("h2", { text: "Clear NoX Sync Trash" });
-    contentEl.createEl("p", {
-      text: `${formatBytes(stats.bytes)} in ${formatCount(stats.files, "file")} will be permanently removed from ${NOX_SYNC_TRASH_ROOT}.`,
-    });
+    const message = contentEl.createEl("p", { text: "Calculating trash size..." });
+
+    try {
+      const stats = await this.plugin.syncTrashStats();
+      message.textContent = `${formatBytes(stats.bytes)} in ${formatCount(stats.files, "file")} will be permanently removed from ${NOX_SYNC_TRASH_ROOT}.`;
+    } catch {
+      message.textContent = `The ${NOX_SYNC_TRASH_ROOT} folder will be permanently removed.`;
+    }
 
     const actions = contentEl.createEl("div", { cls: "nox-sync-modal-actions" });
     const yesButton = actions.createEl("button");
@@ -2088,7 +2109,15 @@ class NoxSyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "NoX Sync" });
+    const header = containerEl.createEl("div", { cls: "nox-sync-settings-header" });
+    header.createEl("h2", { text: "NoX Sync" });
+    const donateLink = header.createEl("a", { cls: "nox-sync-donate-button" });
+    donateLink.href = "https://www.buymeacoffee.com/mapherez";
+    donateLink.target = "_blank";
+    donateLink.rel = "noopener noreferrer";
+    donateLink.setAttr("aria-label", "Buy me a coffee");
+    setIcon(donateLink, "coffee");
+    donateLink.createEl("span", { text: "Buy me a coffee" });
 
     new Setting(containerEl)
       .setName("Server URL")
@@ -2185,13 +2214,12 @@ class NoxSyncSettingTab extends PluginSettingTab {
           }),
       );
 
-    const trashStats = this.plugin.syncTrashStats();
-    new Setting(containerEl)
+    const trashSetting = new Setting(containerEl)
       .setName("Local NoX Sync trash")
-      .setDesc(`${formatBytes(trashStats.bytes)} in ${formatCount(trashStats.files, "file")}.`)
+      .setDesc("Calculating trash size...")
       .addButton((button) =>
         button.setButtonText("Refresh").onClick(() => {
-          this.display();
+          void updateTrashDescription();
         }),
       )
       .addButton((button) =>
@@ -2199,9 +2227,21 @@ class NoxSyncSettingTab extends PluginSettingTab {
           .setButtonText("Clear trash")
           .setIcon("trash-2")
           .onClick(() => {
-            new ClearSyncTrashModal(this.app, this.plugin, () => this.display()).open();
+            new ClearSyncTrashModal(this.app, this.plugin, () => {
+              void updateTrashDescription();
+            }).open();
           }),
       );
+
+    const updateTrashDescription = async () => {
+      try {
+        const trashStats = await this.plugin.syncTrashStats();
+        trashSetting.setDesc(`${formatBytes(trashStats.bytes)} in ${formatCount(trashStats.files, "file")}.`);
+      } catch {
+        trashSetting.setDesc(`Could not read ${NOX_SYNC_TRASH_ROOT}.`);
+      }
+    };
+    void updateTrashDescription();
   }
 }
 
