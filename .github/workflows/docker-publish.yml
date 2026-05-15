@@ -10,12 +10,15 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   publish:
     name: Publish backend image
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout

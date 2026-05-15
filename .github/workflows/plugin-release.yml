@@ -4,14 +4,17 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
   release:
     name: Build and release plugin
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout
@@ -39,14 +42,6 @@ jobs:
       - name: Build plugin
         working-directory: plugin
         run: npm run build
-
-      - name: Generate artifact attestations
-        uses: actions/attest@v4
-        with:
-          subject-path: |
-            plugin/dist/main.js
-            plugin/dist/manifest.json
-            plugin/dist/styles.css
 
       - name: Read and validate version
         id: version
@@ -85,6 +80,14 @@ jobs:
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Generate artifact attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            plugin/dist/main.js
+            plugin/dist/manifest.json
+            plugin/dist/styles.css
 
       - name: Create GitHub release
         env:
