@@ -1,5 +1,11 @@
 # NoX Sync - an [Obsidian](https://obsidian.md/) plugin
 
+[![CI](https://github.com/mapherez/nox-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/mapherez/nox-sync/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/mapherez/nox-sync/actions/workflows/codeql.yml/badge.svg)](https://github.com/mapherez/nox-sync/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/mapherez/nox-sync/badge)](https://securityscorecards.dev/viewer/?uri=github.com/mapherez/nox-sync)
+[![Docker](https://github.com/mapherez/nox-sync/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/mapherez/nox-sync/actions/workflows/docker-publish.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+
 NoX Sync is a private, self-hosted sync system for Obsidian vaults. It is designed for people who want a backend they control, Google-authenticated dashboard access, per-user API keys, multiple remote vaults, and explicit manual sync instead of background cloud synchronization.
 
 The project has two parts:
@@ -218,6 +224,17 @@ The release tag should match the version in `plugin/manifest.json`.
 - [User setup guide](docs/user-setup.md)
 - [Backend configuration](docs/backend-configuration.md)
 - [Troubleshooting](docs/troubleshooting.md)
+- [Security policy](SECURITY.md)
+
+## Security And Quality
+
+NoX Sync uses GitHub Actions for backend tests, plugin type checks, plugin tests, plugin builds, and Docker image builds. CodeQL and OpenSSF Scorecard workflows are included for automated security scanning and repository health checks.
+
+Security issues should be reported privately. See [Security Policy](SECURITY.md).
+
+## License
+
+NoX Sync is released under the [GNU General Public License v3.0](LICENSE). You can use, copy, modify, self-host, and redistribute it, but distributed modified versions must remain open-source under the GPL. The software is provided without warranty.
 
 ## Safety Model
 
