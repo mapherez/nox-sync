@@ -2305,7 +2305,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    const header = new Setting(containerEl).setName("NoX Sync").setHeading();
+    const header = new Setting(containerEl).setHeading();
     header.settingEl.addClass("nox-sync-settings-header");
     const donateLink = header.controlEl.createEl("a", { cls: "nox-sync-donate-button" });
     donateLink.href = "https://www.buymeacoffee.com/mapherez";
