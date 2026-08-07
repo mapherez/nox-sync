@@ -22,6 +22,9 @@ func (s *Store) StageUpload(ctx context.Context, userID string, sessionID string
 	if userID == "" || sessionID == "" || clientID == "" {
 		return fmt.Errorf("%w: userId, sessionId, and clientId are required", ErrBadRequest)
 	}
+	if !isSafePathComponent(sessionID) {
+		return fmt.Errorf("%w: invalid sessionId", ErrBadRequest)
+	}
 	if err := validateSHA256(expectedHash); err != nil {
 		return err
 	}

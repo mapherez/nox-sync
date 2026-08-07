@@ -985,5 +985,26 @@ func releaseLockTx(ctx context.Context, tx *sql.Tx, vaultID string, sessionID st
 }
 
 func (s *Store) stagingSessionDir(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if !isSafePathComponent(sessionID) {
+		return filepath.Join(s.dataDir, "staging")
+	}
 	return filepath.Join(s.dataDir, "staging", sessionID)
+}
+
+func isSafePathComponent(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	if strings.Contains(value, "/") || strings.Contains(value, "\\") || strings.Contains(value, "..") {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
