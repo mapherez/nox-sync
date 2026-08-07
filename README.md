@@ -19,6 +19,16 @@ The project has two parts:
 
 NoX Sync does not use external databases, external sync providers, vault sharing, realtime collaboration services, or automatic background sync.
 
+## Who is NoX Sync for?
+
+NoX Sync is intended for Obsidian users who want to:
+
+- keep their vault sync infrastructure under their own control;
+- self-host the backend on a NAS, homelab, VPS, or Docker machine;
+- sync the same vault between multiple devices;
+- avoid third-party file-sync or database services;
+- explicitly control when synchronization happens.
+
 ## Features
 
 - Manual sync from the Obsidian ribbon button or `NoX Sync: Sync vault` command.
