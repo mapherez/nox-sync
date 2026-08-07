@@ -81,8 +81,24 @@
   margin-bottom: 0.75rem;
 }
 
+.setting-item.nox-sync-settings-header {
+  padding-bottom: 1rem;
+  padding-top: 1rem;
+}
+
+.nox-sync-settings-header .setting-item-name,
 .nox-sync-settings-header h2 {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin: 0;
+}
+
+.nox-sync-settings-version {
+  color: var(--text-muted);
+  font-size: 0.7em;
+  font-weight: 500;
 }
 
 .nox-sync-donate-button {
@@ -109,12 +125,6 @@
   width: 16px;
 }
 
-.nox-sync-vault-manager {
-  border-bottom: 1px solid var(--background-modifier-border);
-  padding: 18px 0;
-}
-
-.nox-sync-vault-manager-header,
 .nox-sync-modal-header {
   align-items: center;
   display: flex;
@@ -122,12 +132,10 @@
   justify-content: space-between;
 }
 
-.nox-sync-vault-manager-header h3,
 .nox-sync-modal-header h2 {
   margin: 0;
 }
 
-.nox-sync-vault-manager-actions,
 .nox-sync-vault-row-actions {
   align-items: center;
   display: flex;
@@ -135,22 +143,12 @@
   gap: 6px;
 }
 
-.nox-sync-vault-select-row {
-  margin-top: 12px;
-}
-
-.nox-sync-vault-select-row select {
-  width: 100%;
-}
-
-.nox-sync-vault-list,
 .nox-sync-deleted-vault-list {
   display: grid;
   gap: 8px;
   margin-top: 12px;
 }
 
-.nox-sync-vault-row,
 .nox-sync-deleted-vault-row {
   align-items: center;
   border: 1px solid var(--background-modifier-border);
@@ -161,11 +159,6 @@
   padding: 8px;
 }
 
-.nox-sync-vault-row.is-selected {
-  border-color: var(--interactive-accent);
-}
-
-.nox-sync-vault-info,
 .nox-sync-vault-info-static {
   background: transparent;
   border: 0;
@@ -177,17 +170,12 @@
   text-align: left;
 }
 
-.nox-sync-vault-info {
-  cursor: pointer;
-}
-
 .nox-sync-vault-name {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 
 .nox-sync-vault-meta,
-.nox-sync-vault-empty,
 .nox-sync-vault-selected-label {
   color: var(--text-muted);
   font-size: 0.85em;
@@ -317,18 +305,11 @@
 }
 
 @media (max-width: 720px) {
-  .nox-sync-vault-manager-header,
-  .nox-sync-vault-row,
   .nox-sync-deleted-vault-row {
     align-items: stretch;
     grid-template-columns: 1fr;
   }
 
-  .nox-sync-vault-manager-header {
-    flex-direction: column;
-  }
-
-  .nox-sync-vault-manager-actions,
   .nox-sync-vault-row-actions {
     justify-content: flex-start;
   }

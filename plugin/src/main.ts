@@ -2328,13 +2328,9 @@ class NoxSyncSettingTab extends PluginSettingTab {
         render: (setting) => this.renderClientNameSetting(setting),
       },
       {
-        name: "Backend vault",
-        desc: "Remote vault on this backend for the currently opened Obsidian vault.",
-        aliases: ["Remote vault", "Vault selection", "Restore deleted vaults"],
-        render: (setting) => {
-          setting.settingEl.empty();
-          this.renderBackendVaultManager(setting.settingEl);
-        },
+        type: "list",
+        heading: "Backend vault",
+        items: this.backendVaultSettingDefinitions(),
       },
       {
         name: "Sync hidden files",
@@ -2357,23 +2353,13 @@ class NoxSyncSettingTab extends PluginSettingTab {
     ];
   }
 
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-
-    this.renderDonateSetting(new Setting(containerEl));
-    this.renderServerUrlSetting(new Setting(containerEl));
-    this.renderApiKeySetting(new Setting(containerEl));
-    this.renderClientNameSetting(new Setting(containerEl));
-    this.renderBackendVaultManager(containerEl);
-    this.renderSyncHiddenFilesSetting(new Setting(containerEl));
-    this.renderTestConnectionSetting(new Setting(containerEl));
-    this.renderTrashSetting(new Setting(containerEl));
-  }
-
   private renderDonateSetting(header: Setting): void {
-    header.setHeading();
+    header.setName("NoX Sync").setHeading();
     header.settingEl.addClass("nox-sync-settings-header");
+    header.nameEl.createEl("span", {
+      text: `v${this.plugin.manifest.version}`,
+      cls: "nox-sync-settings-version",
+    });
     const donateLink = header.controlEl.createEl("a", { cls: "nox-sync-donate-button" });
     donateLink.href = "https://www.buymeacoffee.com/mapherez";
     donateLink.target = "_blank";
@@ -2490,118 +2476,159 @@ class NoxSyncSettingTab extends PluginSettingTab {
   }
 
   private refreshSettingsView(): void {
-    const settingTab = this as { update?: () => void };
-    if (typeof settingTab.update === "function") {
-      settingTab.update();
-      return;
-    }
-
-    this.display();
+    this.update();
   }
 
-  private renderBackendVaultManager(containerEl: HTMLElement): void {
-    const section = containerEl.createEl("div", { cls: "nox-sync-vault-manager" });
-    const header = new Setting(section)
-      .setName("Backend vault")
-      .setDesc("Remote vault on this backend for the currently opened Obsidian vault.")
-      .setHeading();
-    header.settingEl.addClass("nox-sync-vault-manager-header");
+  private backendVaultSettingDefinitions(): SettingDefinitionItem[] {
+    const definitions: SettingDefinitionItem[] = [
+      {
+        name: "Selected backend vault",
+        desc: "Choose the remote vault used by this Obsidian vault.",
+        aliases: ["Selected vault", "Remote vault"],
+        render: (setting) => this.renderSelectedBackendVaultSetting(setting),
+      },
+      {
+        name: "Create backend vault",
+        desc: "Create a remote vault for the currently opened Obsidian vault.",
+        aliases: ["New vault"],
+        render: (setting) => this.renderCreateBackendVaultSetting(setting),
+      },
+      {
+        name: "Refresh backend vaults",
+        desc: "Reload the list of vaults from the backend.",
+        aliases: ["Reload vaults"],
+        render: (setting) => this.renderRefreshBackendVaultsSetting(setting),
+      },
+      {
+        name: "Restore deleted vaults",
+        desc: "Restore backend vaults that were deleted from this plugin.",
+        aliases: ["Deleted vaults"],
+        render: (setting) => this.renderRestoreDeletedVaultsSetting(setting),
+      },
+    ];
 
-    const actions = header.controlEl.createEl("div", { cls: "nox-sync-vault-manager-actions" });
-    const refreshButton = actions.createEl("button", { cls: "clickable-icon nox-sync-icon-button" });
-    refreshButton.type = "button";
-    refreshButton.setAttr("aria-label", "Refresh vaults");
-    refreshButton.setAttr("title", "Refresh vaults");
-    setIcon(refreshButton, "refresh-cw");
-    refreshButton.onclick = async () => {
-      await this.plugin.refreshBackendVaults();
-      this.refreshSettingsView();
-    };
-
-    const restoreButton = actions.createEl("button", { cls: "clickable-icon nox-sync-icon-button" });
-    restoreButton.type = "button";
-    restoreButton.setAttr("aria-label", "Restore deleted vaults");
-    restoreButton.setAttr("title", "Restore deleted vaults");
-    restoreButton.disabled = this.plugin.settings.deletedBackendVaults.length === 0;
-    setIcon(restoreButton, "archive-restore");
-    restoreButton.onclick = () => {
-      new DeletedBackendVaultsModal(this.app, this.plugin, () => this.refreshSettingsView()).open();
-    };
-
-    const createButton = actions.createEl("button", { text: "Create backend vault" });
-    createButton.type = "button";
-    createButton.addClass("mod-cta");
-    createButton.onclick = async () => {
-      await this.plugin.createBackendVault();
-      this.refreshSettingsView();
-    };
-
-    const selectRow = section.createEl("div", { cls: "nox-sync-vault-select-row" });
-    const dropdown = selectRow.createEl("select");
-    const placeholder = dropdown.createEl("option", { text: "Select a backend vault" });
-    placeholder.value = "";
-    for (const vault of this.plugin.settings.backendVaults) {
-      const option = dropdown.createEl("option", {
-        text: `${vault.name} (revision ${vault.revision}, ${formatBytes(vault.sizeBytes ?? 0)})`,
-      });
-      option.value = vault.vaultId;
-    }
-    dropdown.value = this.plugin.settings.selectedVaultId;
-    dropdown.onchange = async () => {
-      await this.plugin.selectBackendVault(dropdown.value);
-      this.refreshSettingsView();
-    };
-
-    const list = section.createEl("div", { cls: "nox-sync-vault-list" });
     if (this.plugin.settings.backendVaults.length === 0) {
-      list.createEl("p", {
-        text: "No backend vaults yet. Create one for this Obsidian vault.",
-        cls: "nox-sync-vault-empty",
+      definitions.push({
+        name: "No backend vaults",
+        desc: "Create one for this Obsidian vault.",
+        searchable: false,
+        render: (setting) => {
+          setting.setName("No backend vaults").setDesc("Create one for this Obsidian vault.");
+        },
       });
-      return;
+      return definitions;
     }
 
     for (const vault of this.plugin.settings.backendVaults) {
-      const selected = vault.vaultId === this.plugin.settings.selectedVaultId;
-      const row = list.createEl("div", {
-        cls: selected ? "nox-sync-vault-row is-selected" : "nox-sync-vault-row",
+      definitions.push({
+        name: vault.name,
+        desc: `Revision ${vault.revision} · ${formatBytes(vault.sizeBytes ?? 0)}`,
+        aliases: ["Backend vault", "Remote vault"],
+        render: (setting) => this.renderBackendVaultRowSetting(setting, vault),
       });
-
-      const info = row.createEl("button", { cls: "nox-sync-vault-info" });
-      info.type = "button";
-      info.onclick = async () => {
-        await this.plugin.selectBackendVault(vault.vaultId);
-        this.refreshSettingsView();
-      };
-      info.createEl("span", { text: vault.name, cls: "nox-sync-vault-name" });
-      info.createEl("span", {
-        text: `Revision ${vault.revision} · ${formatBytes(vault.sizeBytes ?? 0)}`,
-        cls: "nox-sync-vault-meta",
-      });
-
-      const rowActions = row.createEl("div", { cls: "nox-sync-vault-row-actions" });
-      if (selected) {
-        rowActions.createEl("span", { text: "Selected", cls: "nox-sync-vault-selected-label" });
-      }
-
-      const deleteButton = rowActions.createEl("button", { cls: "clickable-icon nox-sync-icon-button nox-sync-danger-icon" });
-      deleteButton.type = "button";
-      deleteButton.setAttr("aria-label", `Delete ${vault.name}`);
-      deleteButton.setAttr("title", "Delete vault");
-      setIcon(deleteButton, "trash-2");
-      deleteButton.onclick = () => {
-        new BackendVaultConfirmModal(
-          this.app,
-          "Delete Backend Vault",
-          `Delete "${vault.name}"? This vault will be hidden and blocked from future sync, but it can be restored later.`,
-          "trash-2",
-          async () => {
-            await this.plugin.deleteBackendVault(vault.vaultId);
-            this.refreshSettingsView();
-          },
-        ).open();
-      };
     }
+
+    return definitions;
+  }
+
+  private renderSelectedBackendVaultSetting(setting: Setting): void {
+    setting
+      .setName("Selected backend vault")
+      .setDesc("Choose the remote vault used by this Obsidian vault.")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("", "Select a backend vault");
+        for (const vault of this.plugin.settings.backendVaults) {
+          dropdown.addOption(vault.vaultId, `${vault.name} (revision ${vault.revision}, ${formatBytes(vault.sizeBytes ?? 0)})`);
+        }
+        dropdown.setValue(this.plugin.settings.selectedVaultId).onChange(async (value) => {
+          await this.plugin.selectBackendVault(value);
+          this.refreshSettingsView();
+        });
+      });
+  }
+
+  private renderCreateBackendVaultSetting(setting: Setting): void {
+    setting
+      .setName("Create backend vault")
+      .setDesc("Create a remote vault for the currently opened Obsidian vault.")
+      .addButton((button) =>
+        button
+          .setButtonText("Create backend vault")
+          .setCta()
+          .onClick(async () => {
+            await this.plugin.createBackendVault();
+            this.refreshSettingsView();
+          }),
+      );
+  }
+
+  private renderRefreshBackendVaultsSetting(setting: Setting): void {
+    setting
+      .setName("Refresh backend vaults")
+      .setDesc("Reload the list of vaults from the backend.")
+      .addButton((button) =>
+        button
+          .setButtonText("Refresh")
+          .setIcon("refresh-cw")
+          .onClick(async () => {
+            await this.plugin.refreshBackendVaults();
+            this.refreshSettingsView();
+          }),
+      );
+  }
+
+  private renderRestoreDeletedVaultsSetting(setting: Setting): void {
+    setting
+      .setName("Restore deleted vaults")
+      .setDesc("Restore backend vaults that were deleted from this plugin.")
+      .addButton((button) =>
+        button
+          .setButtonText("Restore deleted vaults")
+          .setIcon("archive-restore")
+          .setDisabled(this.plugin.settings.deletedBackendVaults.length === 0)
+          .onClick(() => {
+            new DeletedBackendVaultsModal(this.app, this.plugin, () => this.refreshSettingsView()).open();
+          }),
+      );
+  }
+
+  private renderBackendVaultRowSetting(setting: Setting, vault: BackendVault): void {
+    const selected = vault.vaultId === this.plugin.settings.selectedVaultId;
+    setting.setName(vault.name).setDesc(`Revision ${vault.revision} · ${formatBytes(vault.sizeBytes ?? 0)}`);
+
+    if (selected) {
+      setting.controlEl.createEl("span", { text: "Selected", cls: "nox-sync-vault-selected-label" });
+    }
+
+    setting
+      .addButton((button) =>
+        button
+          .setIcon(selected ? "check" : "check-circle")
+          .setTooltip(selected ? "Selected vault" : "Select vault")
+          .setDisabled(selected)
+          .onClick(async () => {
+            await this.plugin.selectBackendVault(vault.vaultId);
+            this.refreshSettingsView();
+          }),
+      )
+      .addButton((button) =>
+        button
+          .setIcon("trash-2")
+          .setTooltip("Delete vault")
+          .setClass("nox-sync-danger-icon")
+          .onClick(() => {
+            new BackendVaultConfirmModal(
+              this.app,
+              "Delete Backend Vault",
+              `Delete "${vault.name}"? This vault will be hidden and blocked from future sync, but it can be restored later.`,
+              "trash-2",
+              async () => {
+                await this.plugin.deleteBackendVault(vault.vaultId);
+                this.refreshSettingsView();
+              },
+            ).open();
+          }),
+      );
   }
 }
 

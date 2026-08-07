@@ -27,6 +27,7 @@ declare module "obsidian" {
 
   export interface PluginManifest {
     id: string;
+    version: string;
   }
 
   export class TAbstractFile {
@@ -95,7 +96,6 @@ declare module "obsidian" {
     constructor(app: App, plugin: Plugin);
     getSettingDefinitions(): SettingDefinitionItem[];
     update(): void;
-    display(): void;
   }
 
   export class Modal {
@@ -110,6 +110,7 @@ declare module "obsidian" {
 
   export class Setting {
     settingEl: HTMLElement;
+    nameEl: HTMLElement;
     controlEl: HTMLElement;
     constructor(containerEl: HTMLElement);
     setName(name: string): this;
@@ -125,13 +126,21 @@ declare module "obsidian" {
     listEl: HTMLElement;
   }
 
-  export interface SettingDefinitionItem {
+  export type SettingDefinitionItem = SettingDefinition | SettingDefinitionList;
+
+  export interface SettingDefinition {
     name: string;
     desc?: string | DocumentFragment;
     aliases?: string[];
     searchable?: boolean | (() => boolean);
     visible?: boolean | (() => boolean);
     render: (setting: Setting, group: SettingGroup) => void | (() => void);
+  }
+
+  export interface SettingDefinitionList {
+    type: "list";
+    heading: string;
+    items: SettingDefinitionItem[];
   }
 
   export class TextComponent {
@@ -145,6 +154,9 @@ declare module "obsidian" {
     setButtonText(text: string): this;
     setIcon(icon: string): this;
     setCta(): this;
+    setClass(cls: string): this;
+    setDisabled(disabled: boolean): this;
+    setTooltip(tooltip: string): this;
     onClick(callback: () => unknown): this;
   }
 
