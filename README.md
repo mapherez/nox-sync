@@ -10,24 +10,28 @@ Made with ❤️ by [Mapherez](https://github.com/mapherez) - If you enjoy NoX S
 
 ## What is NoX Sync?
 
-NoX Sync is a private, self-hosted sync system for Obsidian vaults. It is designed for people who want a backend they control, Google-authenticated dashboard access, per-user API keys, multiple remote vaults, and explicit manual sync instead of background cloud synchronization.
+NoX Sync is a private, self-hosted synchronization system for Obsidian vaults. It consists of an Obsidian plugin and a backend service that together manage remote vault storage, synchronization state, conflict handling, and access control.
 
 The project has two parts:
 
-- `backend/` - Go HTTP service with SQLite metadata, local filesystem blob storage, and Docker support.
+- `backend/` - Go HTTP service with SQLite metadata, local filesystem blob storage, a web dashboard, and Docker support.
 - `plugin/` - Obsidian plugin written in TypeScript using the Obsidian API, HTML, and CSS.
 
-NoX Sync does not use external databases, external sync providers, vault sharing, realtime collaboration services, or automatic background sync.
+Synchronization is explicitly triggered by the user rather than running continuously in the background.
+NoX Sync does not depend on external databases, external sync providers, vault sharing, or realtime collaboration services.
 
 ## Who is NoX Sync for?
 
-NoX Sync is intended for Obsidian users who want to:
+NoX Sync is intended for users who are comfortable managing their own infrastructure and want their Obsidian synchronization stack to remain under their control.
 
-- keep their vault sync infrastructure under their own control;
-- self-host the backend on a NAS, homelab, VPS, or Docker machine;
-- sync the same vault between multiple devices;
-- avoid third-party file-sync or database services;
-- explicitly control when synchronization happens.
+It is particularly suited for users who:
+
+- already run, or are comfortable running, services on a NAS, homelab, VPS, or Docker host;
+- want to synchronize vaults between multiple devices without relying on a managed sync provider;
+- prefer explicit synchronization over always-on background synchronization;
+- are comfortable configuring services such as Docker, domains, reverse proxies, and OAuth where required.
+
+NoX Sync is not intended to hide the underlying infrastructure or operate as a managed cloud service.
 
 ## Features
 
