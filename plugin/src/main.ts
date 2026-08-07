@@ -1,4 +1,5 @@
 import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, requestUrl, setIcon } from "obsidian";
+import type { SettingDefinitionItem } from "obsidian";
 import {
   NOX_SYNC_TRASH_ROOT,
   SyncButtonState,
@@ -1851,7 +1852,7 @@ export default class NoxSyncPlugin extends Plugin {
   }
 
   private async handleVaultRenamed(file: TAbstractFile, oldPath: string): Promise<void> {
-    await this.handleVaultDeleted({ path: oldPath } as TAbstractFile);
+    await this.handleVaultDeleted({ path: oldPath });
     this.handleVaultChanged(file);
   }
 
@@ -2301,11 +2302,77 @@ class NoxSyncSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      {
+        name: "NoX Sync",
+        searchable: false,
+        render: (setting) => this.renderDonateSetting(setting),
+      },
+      {
+        name: "Server URL",
+        desc: "Backend URL, for example http://localhost:5710.",
+        aliases: ["Backend URL"],
+        render: (setting) => this.renderServerUrlSetting(setting),
+      },
+      {
+        name: "API key",
+        desc: "Reusable noxsync_ API key from the backend dashboard.",
+        aliases: ["Authentication token"],
+        render: (setting) => this.renderApiKeySetting(setting),
+      },
+      {
+        name: "Client name",
+        desc: "Readable name shown when this device owns the sync lock.",
+        aliases: ["Device name"],
+        render: (setting) => this.renderClientNameSetting(setting),
+      },
+      {
+        name: "Backend vault",
+        desc: "Remote vault on this backend for the currently opened Obsidian vault.",
+        aliases: ["Remote vault", "Vault selection", "Restore deleted vaults"],
+        render: (setting) => {
+          setting.settingEl.empty();
+          this.renderBackendVaultManager(setting.settingEl);
+        },
+      },
+      {
+        name: "Sync hidden files",
+        desc: "Includes dot-prefixed vault files, while still excluding NoX Sync plugin data.",
+        aliases: ["Dotfiles"],
+        render: (setting) => this.renderSyncHiddenFilesSetting(setting),
+      },
+      {
+        name: "Test connection",
+        desc: "Checks that the backend is reachable and the API key is valid.",
+        aliases: ["Backend connectivity"],
+        render: (setting) => this.renderTestConnectionSetting(setting),
+      },
+      {
+        name: "Local NoX Sync trash",
+        desc: `Local ${NOX_SYNC_TRASH_ROOT} folder used when deleting stale sync files.`,
+        aliases: ["Clear trash", "Trash size"],
+        render: (setting) => this.renderTrashSetting(setting),
+      },
+    ];
+  }
+
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
 
-    const header = new Setting(containerEl).setHeading();
+    this.renderDonateSetting(new Setting(containerEl));
+    this.renderServerUrlSetting(new Setting(containerEl));
+    this.renderApiKeySetting(new Setting(containerEl));
+    this.renderClientNameSetting(new Setting(containerEl));
+    this.renderBackendVaultManager(containerEl);
+    this.renderSyncHiddenFilesSetting(new Setting(containerEl));
+    this.renderTestConnectionSetting(new Setting(containerEl));
+    this.renderTrashSetting(new Setting(containerEl));
+  }
+
+  private renderDonateSetting(header: Setting): void {
+    header.setHeading();
     header.settingEl.addClass("nox-sync-settings-header");
     const donateLink = header.controlEl.createEl("a", { cls: "nox-sync-donate-button" });
     donateLink.href = "https://www.buymeacoffee.com/mapherez";
@@ -2314,8 +2381,10 @@ class NoxSyncSettingTab extends PluginSettingTab {
     donateLink.setAttr("aria-label", "Buy me a coffee");
     setIcon(donateLink, "coffee");
     donateLink.createEl("span", { text: "Buy me a coffee" });
+  }
 
-    new Setting(containerEl)
+  private renderServerUrlSetting(setting: Setting): void {
+    setting
       .setName("Server URL")
       .setDesc("Backend URL, for example http://localhost:5710.")
       .addText((text) =>
@@ -2328,8 +2397,10 @@ class NoxSyncSettingTab extends PluginSettingTab {
             this.plugin.queueSettingsRefresh();
           }),
       );
+  }
 
-    new Setting(containerEl)
+  private renderApiKeySetting(setting: Setting): void {
+    setting
       .setName("API key")
       .setDesc("Reusable noxsync_ API key from the backend dashboard.")
       .addText((text) => {
@@ -2343,8 +2414,10 @@ class NoxSyncSettingTab extends PluginSettingTab {
             this.plugin.queueSettingsRefresh();
           });
       });
+  }
 
-    new Setting(containerEl)
+  private renderClientNameSetting(setting: Setting): void {
+    setting
       .setName("Client name")
       .setDesc("Readable name shown when this device owns the sync lock.")
       .addText((text) =>
@@ -2356,10 +2429,10 @@ class NoxSyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
+  }
 
-    this.renderBackendVaultManager(containerEl);
-
-    new Setting(containerEl)
+  private renderSyncHiddenFilesSetting(setting: Setting): void {
+    setting
       .setName("Sync hidden files")
       .setDesc("Includes dot-prefixed vault files, while still excluding NoX Sync plugin data.")
       .addToggle((toggle) =>
@@ -2369,8 +2442,10 @@ class NoxSyncSettingTab extends PluginSettingTab {
           this.plugin.queueSettingsRefresh();
         }),
       );
+  }
 
-    new Setting(containerEl)
+  private renderTestConnectionSetting(setting: Setting): void {
+    setting
       .setName("Test connection")
       .setDesc("Checks that the backend is reachable and the API key is valid.")
       .addButton((button) =>
@@ -2381,8 +2456,10 @@ class NoxSyncSettingTab extends PluginSettingTab {
             void this.plugin.testConnection();
           }),
       );
+  }
 
-    const trashSetting = new Setting(containerEl)
+  private renderTrashSetting(trashSetting: Setting): void {
+    trashSetting
       .setName("Local NoX Sync trash")
       .setDesc("Calculating trash size...")
       .addButton((button) =>
@@ -2412,6 +2489,16 @@ class NoxSyncSettingTab extends PluginSettingTab {
     void updateTrashDescription();
   }
 
+  private refreshSettingsView(): void {
+    const settingTab = this as { update?: () => void };
+    if (typeof settingTab.update === "function") {
+      settingTab.update();
+      return;
+    }
+
+    this.display();
+  }
+
   private renderBackendVaultManager(containerEl: HTMLElement): void {
     const section = containerEl.createEl("div", { cls: "nox-sync-vault-manager" });
     const header = new Setting(section)
@@ -2428,7 +2515,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
     setIcon(refreshButton, "refresh-cw");
     refreshButton.onclick = async () => {
       await this.plugin.refreshBackendVaults();
-      this.display();
+      this.refreshSettingsView();
     };
 
     const restoreButton = actions.createEl("button", { cls: "clickable-icon nox-sync-icon-button" });
@@ -2438,7 +2525,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
     restoreButton.disabled = this.plugin.settings.deletedBackendVaults.length === 0;
     setIcon(restoreButton, "archive-restore");
     restoreButton.onclick = () => {
-      new DeletedBackendVaultsModal(this.app, this.plugin, () => this.display()).open();
+      new DeletedBackendVaultsModal(this.app, this.plugin, () => this.refreshSettingsView()).open();
     };
 
     const createButton = actions.createEl("button", { text: "Create backend vault" });
@@ -2446,7 +2533,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
     createButton.addClass("mod-cta");
     createButton.onclick = async () => {
       await this.plugin.createBackendVault();
-      this.display();
+      this.refreshSettingsView();
     };
 
     const selectRow = section.createEl("div", { cls: "nox-sync-vault-select-row" });
@@ -2462,7 +2549,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
     dropdown.value = this.plugin.settings.selectedVaultId;
     dropdown.onchange = async () => {
       await this.plugin.selectBackendVault(dropdown.value);
-      this.display();
+      this.refreshSettingsView();
     };
 
     const list = section.createEl("div", { cls: "nox-sync-vault-list" });
@@ -2484,7 +2571,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
       info.type = "button";
       info.onclick = async () => {
         await this.plugin.selectBackendVault(vault.vaultId);
-        this.display();
+        this.refreshSettingsView();
       };
       info.createEl("span", { text: vault.name, cls: "nox-sync-vault-name" });
       info.createEl("span", {
@@ -2510,7 +2597,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
           "trash-2",
           async () => {
             await this.plugin.deleteBackendVault(vault.vaultId);
-            this.display();
+            this.refreshSettingsView();
           },
         ).open();
       };

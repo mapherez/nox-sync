@@ -93,6 +93,8 @@ declare module "obsidian" {
     plugin: Plugin;
     containerEl: HTMLElement;
     constructor(app: App, plugin: Plugin);
+    getSettingDefinitions(): SettingDefinitionItem[];
+    update(): void;
     display(): void;
   }
 
@@ -117,6 +119,19 @@ declare module "obsidian" {
     addDropdown(callback: (component: DropdownComponent) => unknown): this;
     addToggle(callback: (component: ToggleComponent) => unknown): this;
     addButton(callback: (component: ButtonComponent) => unknown): this;
+  }
+
+  export interface SettingGroup {
+    listEl: HTMLElement;
+  }
+
+  export interface SettingDefinitionItem {
+    name: string;
+    desc?: string | DocumentFragment;
+    aliases?: string[];
+    searchable?: boolean | (() => boolean);
+    visible?: boolean | (() => boolean);
+    render: (setting: Setting, group: SettingGroup) => void | (() => void);
   }
 
   export class TextComponent {
