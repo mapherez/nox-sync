@@ -2,7 +2,7 @@
   "id": "nox-sync",
   "name": "NoX Sync",
   "version": "1.0.1",
-  "minAppVersion": "1.11.0",
+  "minAppVersion": "1.13.0",
   "description": "Manual self-hosted sync for your vaults. Requires a user-run NoX Sync backend.",
   "author": "Mapherez",
   "authorUrl": "https://github.com/mapherez",
