@@ -7,11 +7,10 @@ on:
     branches:
       - master
     paths:
-      - "backend/**"
       - "plugin/**"
+      - "manifest.json"
+      - "versions.json"
       - ".github/workflows/ci.yml"
-      - "docker-compose.yml"
-      - "docker-compose.dev.yml"
 
 permissions:
   contents: read
@@ -21,33 +20,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  backend:
-    name: Backend
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: stable
-          cache-dependency-path: backend/go.sum
-
-      - name: Check formatting
-        run: |
-          files="$(gofmt -l .)"
-          if [ -n "$files" ]; then
-            echo "$files"
-            exit 1
-          fi
-
-      - name: Test
-        run: go test ./...
-
   plugin:
     name: Plugin
     runs-on: ubuntu-latest
@@ -76,13 +48,3 @@ jobs:
 
       - name: Build
         run: npm run build
-
-  docker:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-
-      - name: Build backend image
-        run: docker build -t nox-sync:test ./backend

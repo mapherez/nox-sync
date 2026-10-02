@@ -1,191 +1,56 @@
 # Troubleshooting
 
-NoX Sync surfaces explicit states instead of silently continuing when sync is unsafe.
+This guide covers the NoX Sync Obsidian plugin. For server installation, dashboard login, hosting, administration, or backend logs and backups, use the [NoX Backend documentation](https://github.com/mapherez/nox-backend).
 
 ## Plugin Does Not Appear In Obsidian
 
-Check that the plugin files are in exactly this folder inside your vault:
+Check that these three files are inside your vault:
 
 ```text
-<vault>/.obsidian/plugins/nox-sync/
+<vault>/.obsidian/plugins/nox-sync/main.js
+<vault>/.obsidian/plugins/nox-sync/manifest.json
+<vault>/.obsidian/plugins/nox-sync/styles.css
 ```
 
-The folder must contain:
+Download the built assets from a [plugin release](https://github.com/mapherez/nox-sync/releases), rather than using GitHub's source code zip. Check the Obsidian version requirement in `manifest.json`, restart Obsidian if needed, and enable NoX Sync under Community Plugins.
 
-```text
-main.js
-manifest.json
-styles.css
-```
+## Test Connection Fails
 
-If you downloaded the GitHub source code zip, that is not the plugin install package. Download the three release assets from:
+Check the **Server URL** and **API key** in NoX Sync settings, then click **Test connection** again.
 
-```text
-https://github.com/mapherez/nox-sync/releases
-```
+Server URL must be the backend's base URL, including its protocol and any required port, for example `https://sync.example.com`. Do not append `/v1` or `/vault-dashboard`. The URL must be reachable from the device running Obsidian.
 
-Restart Obsidian if the plugin still does not appear.
-
-## Dashboard Says Google OAuth Is Not Configured
-
-The backend is running, but one or both Google OAuth variables are missing.
-
-Check your `.env` file:
-
-```bash
-NOX_SYNC_GOOGLE_CLIENT_ID=your-google-client-id
-NOX_SYNC_GOOGLE_CLIENT_SECRET=your-google-client-secret
-NOX_SYNC_ADMIN_EMAILS=you@example.com
-```
-
-Then restart the container:
-
-```bash
-docker compose up -d
-```
-
-## Google Login Fails Or Redirects Back With An Error
-
-The most common cause is a mismatch between:
-
-- `NOX_SYNC_PUBLIC_URL`
-- The Google OAuth redirect URI
-- The URL you use in the browser
-
-For a domain deployment, these should line up:
-
-```bash
-NOX_SYNC_PUBLIC_URL=https://sync.example.com
-```
-
-```text
-https://sync.example.com/auth/google/callback
-```
-
-```text
-https://sync.example.com/vault-dashboard
-```
-
-For local testing with the default Compose port:
-
-```bash
-NOX_SYNC_PUBLIC_URL=http://localhost:5710
-```
-
-```text
-http://localhost:5710/auth/google/callback
-```
-
-```text
-http://localhost:5710/vault-dashboard
-```
-
-## Google Login Works But Access Is Denied
-
-The Google account is not allowlisted or has been disabled.
-
-Make sure the first admin email is in `NOX_SYNC_ADMIN_EMAILS`:
-
-```bash
-NOX_SYNC_ADMIN_EMAILS=you@example.com
-```
-
-Emails are comma-separated:
-
-```bash
-NOX_SYNC_ADMIN_EMAILS=you@example.com,other-admin@example.com
-```
-
-Bootstrap admin emails are created or restored as active admins on backend startup.
+If the server is hosted on another device, `localhost` will not point to that server. Ask your server administrator for the correct reachable URL and current API key.
 
 ## `AUTH_FAILED`
 
-The plugin reached the backend, but the API key was missing or invalid.
+The plugin reached the backend, but authentication failed.
 
-Check that the API key in plugin settings exactly matches the current key shown on the backend dashboard. If you generated a new key, update every existing device manually.
+Check that the API key exactly matches the current key supplied by that backend. If you regenerated it, update every device using the old key. Make sure the key belongs to the user who owns the remote vault you want to select.
 
-In the multi-user backend, API keys are per user. Make sure the key belongs to the same Google user that owns the backend vault you are selecting.
-
-## Select Or Create Backend Vault
-
-The plugin reached the backend, but no remote vault is selected.
-
-Open NoX Sync settings, use the Backend vault section, then select a backend vault or create one from the current Obsidian vault name.
-
-If a previously selected vault was deleted, restore it from the plugin settings or dashboard, or select a different vault before syncing again.
-
-If a vault was permanently deleted, it cannot be restored. Create a new backend vault and sync again.
-
-When no backend vault is selected, clicking the NoX Sync ribbon icon opens the NoX Sync settings tab directly.
+For disabled accounts, dashboard login problems, or server-side authorization issues, contact the server administrator or follow the [NoX Backend guidance](https://github.com/mapherez/nox-backend).
 
 ## `SERVER_UNREACHABLE`
 
 The plugin could not reach the backend.
 
-Check that the container is running:
+Verify the Server URL, network connection, protocol, and port from the device running Obsidian. Confirm with the server administrator that the backend is available at that URL, then retry **Test connection**.
 
-```bash
-docker compose ps
-```
+Server startup, reverse proxy configuration, and server log diagnosis belong to [NoX Backend](https://github.com/mapherez/nox-backend).
 
-Check backend logs:
+## Select Or Create Backend Vault
 
-```bash
-docker compose logs nox-sync
-```
+No remote vault is selected. Open NoX Sync settings, use the **Backend vault** section, and select a remote vault or create one using the current Obsidian vault name.
 
-Verify the Server URL in plugin settings, including protocol and port.
+If a previously selected vault was deleted, restore it through plugin settings or select a different vault before syncing again. A permanently deleted vault cannot be restored; create or select another remote vault.
 
-For the default Compose file, local Server URL is:
-
-```text
-http://localhost:5710
-```
-
-If you use a domain or reverse proxy, the plugin Server URL should be the same public origin as `NOX_SYNC_PUBLIC_URL`.
-
-## Docker Container Is Running But Browser Cannot Open The Dashboard
-
-Check the port mapping:
-
-```bash
-docker compose ps
-```
-
-The provided Compose file maps:
-
-```text
-5710:8080
-```
-
-Open:
-
-```text
-http://localhost:5710/vault-dashboard
-```
-
-If another service already uses port `5710`, change the left side of the port mapping in `docker-compose.yml`, for example:
-
-```yaml
-ports:
-  - "5711:8080"
-```
-
-Then open:
-
-```text
-http://localhost:5711/vault-dashboard
-```
-
-Also update `NOX_SYNC_PUBLIC_URL` and the Google OAuth redirect URI to use the same port.
+When no remote vault is selected, clicking the ribbon icon opens NoX Sync settings directly.
 
 ## `BLOCKED_REMOTE`
 
-Another sync session currently owns the selected backend vault's sync lock.
+Another sync session owns the selected remote vault's sync lock. Wait for the other device to finish before trying again.
 
-Wait for the other device to finish. If that device crashed or lost connectivity, the backend heartbeat timeout eventually marks that vault's lock stale and unblocks future syncs.
-
-Different backend vaults can sync at the same time.
+If that device crashed or lost connectivity, its lock can remain until the backend's heartbeat timeout expires. Persistent lock problems require server-side diagnosis through [NoX Backend](https://github.com/mapherez/nox-backend). Different remote vaults can sync independently.
 
 ## `CONFLICT`
 
@@ -197,38 +62,18 @@ NoX Sync does not silently overwrite conflicting changes.
 
 ## `ERROR`
 
-The last sync failed in a recoverable or unsafe state.
+The last sync failed. Possible causes include interrupted transfers, stale sessions, hash mismatches, or missing remote content. Retry when the connection and credentials are valid.
 
-Common causes include interrupted uploads, stale sessions, hash mismatches, or missing remote content. The plugin maps known backend error codes to safe retry behavior where possible. If retry fails repeatedly, check backend logs and preserve the vault before making manual changes.
-
-## Stale Locks
-
-During sync, the plugin sends regular heartbeats. If Obsidian closes, the network drops, or a sync hangs, heartbeats stop. The backend marks the lock stale after expiry, removes abandoned staging content, and broadcasts the stale state to connected clients.
+If the error persists, preserve your local vault and collect the plugin version, steps to reproduce, and error details with secrets removed. Report plugin issues in this repository. Ask the server administrator to investigate backend failures using the [NoX Backend project](https://github.com/mapherez/nox-backend).
 
 ## Local NoX Sync Trash
 
-NoX Sync moves replaced or deleted local files into `.nox-sync-trash/` before applying remote changes. This is local safety storage only; it is excluded from sync and is not uploaded to the backend.
+NoX Sync moves replaced or deleted local files into `.nox-sync-trash/` before applying remote changes. This is local safety storage; it is excluded from synchronization and is not uploaded to the backend.
 
-If it grows large, open NoX Sync settings and use the local trash size and clear-trash controls. Clearing the trash permanently removes `.nox-sync-trash/` from the currently opened vault.
+Plugin settings show its size and provide a clear-trash action. Clearing it permanently removes `.nox-sync-trash/` from the currently opened vault, including its safety copies.
 
-## Deleted Vaults Still Use Space
+## Deleted Remote Vaults Still Use Space
 
-Deleted backend vaults are soft-deleted first so they can be restored. Soft-deleted vaults can still use backend storage.
+Soft-deleted remote vaults can be restored and may still use server storage. Plugin settings provide restore and permanent-delete controls. Permanent deletion cannot be undone.
 
-To reclaim backend space:
-
-1. Open the dashboard or plugin settings.
-2. Open the deleted vaults restore window.
-3. Permanently delete the vault.
-
-Permanent delete removes the vault metadata and then removes finalized blobs that are no longer referenced by any remaining vault.
-
-## Backups
-
-Back up the complete backend `/data` directory, not just the SQLite database. The database and `/data/blobs` directory must stay together.
-
-If you use the production Compose file, `/data` is stored in the Docker volume named:
-
-```text
-nox-sync-data
-```
+For server storage accounting, cleanup, and backups, follow the [NoX Backend documentation](https://github.com/mapherez/nox-backend).

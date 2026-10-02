@@ -1,7 +1,0 @@
-.git
-.gitignore
-Dockerfile
-*.db
-*.db-*
-data
-tmp

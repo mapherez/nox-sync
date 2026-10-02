@@ -10,13 +10,3 @@ updates:
     directory: "/plugin"
     schedule:
       interval: "weekly"
-
-  - package-ecosystem: "gomod"
-    directory: "/backend"
-    schedule:
-      interval: "weekly"
-
-  - package-ecosystem: "docker"
-    directory: "/backend"
-    schedule:
-      interval: "weekly"
