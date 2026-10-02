@@ -2006,9 +2006,9 @@ class ConflictResolutionModal extends Modal {
       this.selectedPath = conflicts[0];
     }
 
-    const layout = contentEl.createEl("div", { cls: "nox-sync-conflict-layout" });
-    const list = layout.createEl("div", { cls: "nox-sync-conflict-list" });
-    const detail = layout.createEl("div", { cls: "nox-sync-conflict-detail" });
+    const layout = contentEl.createDiv({ cls: "nox-sync-conflict-layout" });
+    const list = layout.createDiv({ cls: "nox-sync-conflict-list" });
+    const detail = layout.createDiv({ cls: "nox-sync-conflict-detail" });
 
     for (const path of conflicts) {
       const item = list.createEl("button", {
@@ -2038,22 +2038,22 @@ class ConflictResolutionModal extends Modal {
       container.empty();
       container.createEl("h3", { text: path });
 
-      const meta = container.createEl("div", { cls: "nox-sync-conflict-meta" });
-      meta.createEl("span", {
+      const meta = container.createDiv({ cls: "nox-sync-conflict-meta" });
+      meta.createSpan({
         text: preview.detail.localDeleted ? "Local: deleted" : `Local: ${shortHash(preview.localHash)}`,
       });
-      meta.createEl("span", {
+      meta.createSpan({
         text: preview.detail.remoteDeleted ? "Remote: deleted" : `Remote: ${shortHash(preview.remoteHash)}`,
       });
 
       let mergeInput: HTMLTextAreaElement | null = null;
       if (preview.isMarkdown) {
-        const columns = container.createEl("div", { cls: "nox-sync-conflict-columns" });
+        const columns = container.createDiv({ cls: "nox-sync-conflict-columns" });
         this.renderReadonlyText(columns, "Local version", preview.localText ?? "(deleted)");
         this.renderReadonlyText(columns, "Remote version", preview.remoteText ?? "(deleted)");
 
         if (!preview.detail.localDeleted && !preview.detail.remoteDeleted) {
-          const mergeWrap = container.createEl("div", { cls: "nox-sync-conflict-merge" });
+          const mergeWrap = container.createDiv({ cls: "nox-sync-conflict-merge" });
           mergeWrap.createEl("h4", { text: "Manual merge" });
           mergeInput = mergeWrap.createEl("textarea", { cls: "nox-sync-conflict-textarea" });
           mergeInput.value = preview.localText ?? "";
@@ -2065,7 +2065,7 @@ class ConflictResolutionModal extends Modal {
         });
       }
 
-      const actions = container.createEl("div", { cls: "nox-sync-conflict-actions" });
+      const actions = container.createDiv({ cls: "nox-sync-conflict-actions" });
       this.renderActionButton(actions, "Keep local", path, "keep_local");
       this.renderActionButton(actions, "Keep remote", path, "keep_remote");
       this.renderActionButton(actions, "Keep both", path, "keep_both");
@@ -2080,7 +2080,7 @@ class ConflictResolutionModal extends Modal {
   }
 
   private renderReadonlyText(container: HTMLElement, label: string, value: string): void {
-    const wrap = container.createEl("div", { cls: "nox-sync-conflict-version" });
+    const wrap = container.createDiv({ cls: "nox-sync-conflict-version" });
     wrap.createEl("h4", { text: label });
     const textarea = wrap.createEl("textarea", { cls: "nox-sync-conflict-textarea" });
     textarea.readOnly = true;
@@ -2146,12 +2146,12 @@ class ClearSyncTrashModal extends Modal {
       message.textContent = `The ${NOX_SYNC_TRASH_ROOT} folder will be permanently removed.`;
     }
 
-    const actions = contentEl.createEl("div", { cls: "nox-sync-modal-actions" });
+    const actions = contentEl.createDiv({ cls: "nox-sync-modal-actions" });
     const yesButton = actions.createEl("button");
     yesButton.type = "button";
     yesButton.addClass("mod-warning");
     setIcon(yesButton, "trash-2");
-    yesButton.createEl("span", { text: "Yes" });
+    yesButton.createSpan({ text: "Yes" });
     yesButton.onclick = async () => {
       try {
         await this.plugin.clearSyncTrash();
@@ -2190,12 +2190,12 @@ class BackendVaultConfirmModal extends Modal {
     contentEl.createEl("h2", { text: this.title });
     contentEl.createEl("p", { text: this.message });
 
-    const actions = contentEl.createEl("div", { cls: "nox-sync-modal-actions" });
+    const actions = contentEl.createDiv({ cls: "nox-sync-modal-actions" });
     const yesButton = actions.createEl("button");
     yesButton.type = "button";
     yesButton.addClass("mod-warning");
     setIcon(yesButton, this.iconName);
-    yesButton.createEl("span", { text: "Yes" });
+    yesButton.createSpan({ text: "Yes" });
     yesButton.onclick = async () => {
       yesButton.disabled = true;
       try {
@@ -2236,7 +2236,7 @@ class DeletedBackendVaultsModal extends Modal {
     contentEl.empty();
     contentEl.addClass("nox-sync-deleted-vaults-modal");
 
-    const header = contentEl.createEl("div", { cls: "nox-sync-modal-header" });
+    const header = contentEl.createDiv({ cls: "nox-sync-modal-header" });
     header.createEl("h2", { text: "Deleted Backend Vaults" });
 
     const vaults = this.plugin.settings.deletedBackendVaults;
@@ -2245,17 +2245,17 @@ class DeletedBackendVaultsModal extends Modal {
       return;
     }
 
-    const list = contentEl.createEl("div", { cls: "nox-sync-deleted-vault-list" });
+    const list = contentEl.createDiv({ cls: "nox-sync-deleted-vault-list" });
     for (const vault of vaults) {
-      const row = list.createEl("div", { cls: "nox-sync-deleted-vault-row" });
-      const info = row.createEl("div", { cls: "nox-sync-vault-info-static" });
-      info.createEl("span", { text: vault.name, cls: "nox-sync-vault-name" });
-      info.createEl("span", {
+      const row = list.createDiv({ cls: "nox-sync-deleted-vault-row" });
+      const info = row.createDiv({ cls: "nox-sync-vault-info-static" });
+      info.createSpan({ text: vault.name, cls: "nox-sync-vault-name" });
+      info.createSpan({
         text: `${formatBytes(vault.sizeBytes ?? 0)} · deleted vault`,
         cls: "nox-sync-vault-meta",
       });
 
-      const actions = row.createEl("div", { cls: "nox-sync-vault-row-actions" });
+      const actions = row.createDiv({ cls: "nox-sync-vault-row-actions" });
       const restoreButton = actions.createEl("button", { cls: "clickable-icon nox-sync-icon-button" });
       restoreButton.type = "button";
       restoreButton.setAttr("aria-label", `Restore ${vault.name}`);
@@ -2356,7 +2356,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
   private renderDonateSetting(header: Setting): void {
     header.setName("NoX Sync").setHeading();
     header.settingEl.addClass("nox-sync-settings-header");
-    header.nameEl.createEl("span", {
+    header.nameEl.createSpan({
       text: `v${this.plugin.manifest.version}`,
       cls: "nox-sync-settings-version",
     });
@@ -2366,7 +2366,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
     donateLink.rel = "noopener noreferrer";
     donateLink.setAttr("aria-label", "Buy me a coffee");
     setIcon(donateLink, "coffee");
-    donateLink.createEl("span", { text: "Buy me a coffee" });
+    donateLink.createSpan({ text: "Buy me a coffee" });
   }
 
   private renderServerUrlSetting(setting: Setting): void {
@@ -2597,7 +2597,7 @@ class NoxSyncSettingTab extends PluginSettingTab {
     setting.setName(vault.name).setDesc(`Revision ${vault.revision} · ${formatBytes(vault.sizeBytes ?? 0)}`);
 
     if (selected) {
-      setting.controlEl.createEl("span", { text: "Selected", cls: "nox-sync-vault-selected-label" });
+      setting.controlEl.createSpan({ text: "Selected", cls: "nox-sync-vault-selected-label" });
     }
 
     setting

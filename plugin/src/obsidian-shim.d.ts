@@ -204,4 +204,6 @@ interface HTMLElement {
     tagName: K,
     options?: { text?: string; cls?: string },
   ): HTMLElementTagNameMap[K];
+  createDiv(options?: { text?: string; cls?: string }): HTMLDivElement;
+  createSpan(options?: { text?: string; cls?: string }): HTMLSpanElement;
 }
